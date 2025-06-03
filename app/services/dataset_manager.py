@@ -1174,7 +1174,7 @@ class ImageMaskVisualDatasetBuilder:
                                  # weight to compute loss of the morphologically processed mask
                                  {'predicted_mask': z}))
 
-        training_dataset = training_dataset.take(count=-1)
+        # training_dataset = training_dataset.take(count=-1)
         training_dataset = training_dataset.cache(filename=self.train_cache)
         training_dataset = training_dataset.shuffle(buffer_size=self.train_shuffle_size) if \
             self.shuffle else training_dataset
@@ -1212,7 +1212,7 @@ class ImageMaskVisualDatasetBuilder:
             validation_dataset = validation_dataset.map(lambda x, y: ({'image': x},  # image
                                                                       {'predicted_mask': y,
                                                                        'processed_mask': y}))  # mask
-        validation_dataset = validation_dataset.take(count=-1)
+        # validation_dataset = validation_dataset.take(count=-1)
         validation_dataset = validation_dataset.cache(filename=self.val_cache)
         validation_dataset = validation_dataset.shuffle(
             buffer_size=self.validation_shuffle_size) if self.shuffle_validation_data else validation_dataset
@@ -1252,7 +1252,7 @@ class ImageMaskVisualDatasetBuilder:
                               {'predicted_mask': y,  # to compute loss of the predicted mask
                                'processed_mask': y}))  # to compute loss of the morphologically processed mask
 
-        test_dataset = test_dataset.take(count=-1)
+        # test_dataset = test_dataset.take(count=-1)
         test_dataset = test_dataset.cache(filename=self.test_cache)
         test_dataset = test_dataset.batch(self.batch_size, drop_remainder=True)
         test_dataset = test_dataset.repeat() if self.prefetch_data else test_dataset
