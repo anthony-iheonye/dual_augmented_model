@@ -409,6 +409,889 @@ class ImageAndMaskDatasetBuilder:
         self._get_dataset(self.original_image_paths, self.original_mask_paths)
 
 
+class ImageMaskVisualDatasetBuilder:
+
+    def __init__(self,
+                 train_directory: Optional[str] = None,
+                 validation_directory: Optional[str] = None,
+                 test_directory: Optional[str] = None,
+                 final_image_shape: Tuple[int, int] = (1024, 1024),
+                 original_image_size: Tuple[int, int] = (2000, 2000),
+                 apply_weight_maps: bool = True,
+                 use_log_weights: bool = False,
+                 apply_unet_edge_weights: bool = False,
+                 image_mask_channels: Tuple[int, int] = (3, 1),
+                 class_names: tuple = ('background', 'pea', 'outline'),
+                 batch_size: Optional[int] = 2,
+                 normalize_using_255: bool = True,
+                 crop_image_and_mask: bool = False,
+                 crop_dimension: Optional[Tuple[int, int, int, int]] = None,
+                 w0: int = 10,
+                 sigma: int = 5,
+                 shuffle: bool = True,
+                 train_shuffle_size: Optional[int] = 100,
+                 shuffle_validation_data=False,
+                 validation_shuffle_size: Optional[int] =100,
+                 prefetch_data: bool = True,
+                 cache_directory='',
+                 overwrite_existing_cache_directory: bool = True,
+                 include_visual_attributes: bool = True,
+                 include_visual_attribute_weights: bool = True,
+                 visual_attributes: tuple = ('L', 'a', 'b', 'contrast', 'correlation', 'energy', 'entropy',
+                                             'homogeneity', 'uniformity', 'equivalent_diameter', 'eccentricity',
+                                             'feret_diameter_max', 'filled_area', 'perimeter', 'roundness'),
+                 train_visual_attributes_json_path: Optional[str] = None,
+                 val_visual_attributes_json_path: Optional[str] = None,
+                 test_visual_attributes_json_path: Optional[str] = None,
+                 visual_attributes_stats_save_dir: Optional[str] = None):
+        """
+        Builds a TensorFlow dataset for semantic segmentation tasks enriched with image-mask pairs, weight maps, and object-level visual attributes.
+
+        This dataset builder prepares training, validation, and test datasets by reading RGB images
+        and corresponding segmentation masks. It includes preprocessing steps such as cropping,
+        resizing, normalization, optional edge detection, weight map generation using the UNet
+        weighting method, and integration of auxiliary visual attributes (e.g., color and texture
+        features) for multi-target learning.
+
+        If `class_names` includes 'outline' (e.g., ('background', 'pea', 'outline')), the class
+        will extract and label object edges (e.g., pea outlines) in the final mask. If only
+        'background' and 'pea' are provided, outlines will be omitted.
+
+        :param train_directory: (str) Path to the directory containing training images and masks.
+        :param validation_directory: (str) Path to the directory containing validation images and masks.
+        :param test_directory: (str) Path to the directory containing test images and masks.
+        :param final_image_shape: (Tuple[int, int]) Target shape to resize images and masks to.
+        :param apply_weight_maps: (bool) Whether to generate weight maps for each mask.
+        :param use_log_weights: (bool) Whether to compute class weights using log scaling.
+        :param apply_unet_edge_weights: (bool) Whether to apply UNet-style edge-aware weighting.
+        :param image_mask_channels: (Tuple[int, int]) Number of channels for image and mask respectively.
+        :param class_names: (Tuple[str]) Names of segmentation classes (e.g., 'background', 'pea').
+        :param batch_size: (int) Number of samples per training/validation/test batch.
+        :param normalize_using_255: (bool) Normalize images to [0, 1] if True, else to [-1, 1].
+        :param crop_image_and_mask: (bool) Whether to crop the image and mask before resizing.
+        :param crop_dimension: (Tuple[int, int, int, int]) Crop window in the format
+            (offset_height, offset_width, target_height, target_width).
+        :param w0: (int) UNet edge-weighting parameter to control influence of object boundaries.
+        :param sigma: (int) UNet edge-weighting Gaussian smoothing parameter.
+        :param shuffle: (bool) Whether to shuffle training data before batching.
+        :param train_shuffle_size: (int) Size of buffer used when shuffling the training data.
+        :param shuffle_validation_data: (bool) Whether to shuffle validation data before batching.
+        :param validation_shuffle_size: (int) Size of buffer used when shuffling validation data.
+        :param prefetch_data: (bool) Whether to prefetch data for improved I/O performance.
+        :param cache_directory: (str) Directory to cache the preprocessed datasets.
+        :param overwrite_existing_cache_directory: (bool) Whether to overwrite existing cached datasets.
+        :param include_visual_attributes: (bool) Whether to include object-level visual attributes.
+        :param include_visual_attribute_weights: (bool) Whether to compute weights for visual attributes.
+        :param visual_attributes: (Tuple[str]) List of visual attributes to include
+            (e.g., 'L', 'a', 'b', 'contrast', 'eccentricity', etc.).
+        :param train_visual_attributes_json_path: (str) Path to JSON file containing training set visual attributes.
+        :param val_visual_attributes_json_path: (str) Path to JSON file containing validation set visual attributes.
+        :param test_visual_attributes_json_path: (str) Path to JSON file containing test set visual attributes.
+        :param visual_attributes_stats_save_dir: (str) Directory to save summary statistics (mean, std, etc.) for normalization.
+
+        """
+
+        # Generate unprocess training set
+        train_dataset_builder = ImageAndMaskDatasetBuilder(
+            images_directory=f"{train_directory}/images",
+            masks_directory=f"{train_directory}/masks",
+            image_mask_channels=image_mask_channels,
+            final_image_shape=final_image_shape,
+            crop_image_and_mask=crop_image_and_mask,
+            crop_dimension=crop_dimension,
+        )
+        train_dataset_builder.run()
+        self.training_dataset = train_dataset_builder.image_mask_dataset
+
+
+        # Generate unprocess validation set
+        val_dataset_builder = ImageAndMaskDatasetBuilder(
+            images_directory=f"{validation_directory}/images",
+            masks_directory=f"{validation_directory}/masks",
+            image_mask_channels=image_mask_channels,
+            final_image_shape=final_image_shape,
+            crop_image_and_mask=crop_image_and_mask,
+            crop_dimension=crop_dimension,
+        )
+        val_dataset_builder.run()
+        self.validation_dataset = val_dataset_builder.image_mask_dataset
+
+
+        # Generate unprocess testing set
+        test_dataset_builder = ImageAndMaskDatasetBuilder(
+            images_directory=f"{test_directory}/images",
+            masks_directory=f"{test_directory}/masks",
+            image_mask_channels=image_mask_channels,
+            final_image_shape=final_image_shape,
+            crop_image_and_mask=crop_image_and_mask,
+            crop_dimension=crop_dimension,
+        )
+        test_dataset_builder.run()
+        self.test_dataset = test_dataset_builder.image_mask_dataset
+
+
+        self.apply_unet_edge_weights = apply_unet_edge_weights
+        self.test_directory = test_directory
+        self.validation_directory = validation_directory
+        self.train_directory = train_directory
+
+        self.original_image_paths = []
+        self.original_mask_paths = []
+        # 'no_pea_threshold' value that would be returned as threshold when the mask contains not infocus pea. The
+        # threshold would be used to separate the foreground (infocus peas) from the background.
+        self.no_pea_thresh = 400.0
+
+
+        self.use_log_weights = use_log_weights
+        self.class_names = class_names
+
+        self.image_size = train_dataset_builder.final_image_shape
+        self.height = self.image_size[0]
+        self.width = self.image_size[1]
+
+        self.apply_weight_maps = apply_weight_maps
+        self.image_mask_channels = image_mask_channels
+        self.crop_image_and_mask = crop_image_and_mask
+        self.crop_dimension = crop_dimension
+        self.w0 = w0
+        self.sigma = sigma
+        self.normalize_using_255 = normalize_using_255
+        self.train_shuffle_size = train_shuffle_size
+        self.validation_shuffle_size = validation_shuffle_size
+        self.shuffle_validation_data = shuffle_validation_data
+        self.batch_size = batch_size
+        self.number_of_classes = len(self.class_names)
+        self.detect_outline = True if self.number_of_classes == 3 else False
+
+
+        self.tune = tf.data.experimental.AUTOTUNE
+        self.cache_directory = cache_directory
+        self.prefetch_data = prefetch_data
+
+        self.overwrite_cache_dir = overwrite_existing_cache_directory
+        if self.cache_directory:
+            self.train_cache = create_directory(os.path.join(self.cache_directory, 'train'), return_dir=True,
+                                                overwrite_if_existing=self.overwrite_cache_dir)
+            self.val_cache = create_directory(os.path.join(self.cache_directory, 'val'), return_dir=True,
+                                              overwrite_if_existing=self.overwrite_cache_dir)
+            self.test_cache = create_directory(os.path.join(self.cache_directory, 'test'), return_dir=True,
+                                               overwrite_if_existing=self.overwrite_cache_dir)
+        else:
+            self.train_cache = self.val_cache = self.test_cache = ''
+        self.shuffle = shuffle
+
+
+        if train_visual_attributes_json_path is not None:
+            self.training_visual_props_json_path = train_visual_attributes_json_path
+        else:
+            self.training_visual_props_json_path = None
+
+        if val_visual_attributes_json_path is not None:
+            self.validation_visual_props_json_path = val_visual_attributes_json_path
+        else:
+            self.validation_visual_props_json_path = None
+
+        if test_visual_attributes_json_path is not None:
+            self.test_visual_props_json_path = test_visual_attributes_json_path
+        else:
+            self.test_visual_props_json_path = None
+
+        self.visual_attributes_stats_save_dir = visual_attributes_stats_save_dir
+        self.training_visual_attributes_json_path = train_visual_attributes_json_path
+        self.validation_visual_attributes_json_path = val_visual_attributes_json_path
+        self.test_visual_attributes_json_path = test_visual_attributes_json_path
+
+        self.include_visual_attributes = include_visual_attributes
+        self.include_visual_attribute_weights = include_visual_attribute_weights
+
+        if self.include_visual_attributes:
+            self.visual_attributes = visual_attributes
+            self.visual_props_processor = VisualAttributesDatasetCreator(
+                train_visual_attributes_json_path=self.training_visual_attributes_json_path,
+                val_visual_attributes_json_path=self.validation_visual_attributes_json_path,
+                test_visual_attributes_json_path=self.test_visual_attributes_json_path,
+                visual_properties=self.visual_attributes)
+
+            self.visual_props_processor.process_data()
+            self.train_unnorm_visual_props_dataframe = self.visual_props_processor.train_unnorm_visual_props_dataframe
+            self.val_unnorm_visual_props_dataframe = self.visual_props_processor.val_unnorm_visual_props_dataframe
+            self.test_unnorm_visual_props_dataframe = self.visual_props_processor.test_unnorm_visual_props_dataframe
+            self.train_visual_props_weights_dataframe = self.visual_props_processor.train_visual_props_weights_dataframe
+            self.train_visual_props_weights_dataset = self.visual_props_processor.train_visual_props_weights_dataset
+
+            self.train_normalized_visual_props_dataframe = self.visual_props_processor.train_normalized_visual_props_df
+            self.val_normalized_visual_props_dataframe = self.visual_props_processor.val_normalized_visual_props_df
+            self.test_normalized_visual_props_df = self.visual_props_processor.test_normalized_visual_props_df
+
+            self.training_visual_props_dataset = self.visual_props_processor.train_visual_props_dataset
+            self.validation_visual_props_dataset = self.visual_props_processor.val_visual_props_dataset
+            self.test_visual_props_dataset = self.visual_props_processor.test_visual_props_dataset
+        else:
+            self.visual_attributes = None
+
+
+    def process_data(self):
+        """Reads the images and masks from their stored location, then prepares a tensorflow training, validation and
+         test dataset."""
+
+        # produce the training validation and test datasets
+        self._produce_train_val_test_datasets()
+
+    @staticmethod
+    def _apply_gaussian_filter(mask):
+        """De-noises the image using a gaussian filter.
+
+        :param mask:  (numpy array) A numpy array of the mask
+        :return: (numpy array) De-noised/filtered mask
+        """
+        mask_smooth = gaussian(mask)
+        return mask_smooth
+
+    def _tf_apply_gaussian_filter(self, image, mask):
+        """De-noises the mask using a Gaussian filter"""
+        mask_shape = mask.shape
+        image_shape = image.shape
+
+        [mask_smooth, ] = tf.py_function(self._apply_gaussian_filter, [mask], [tf.float64])
+
+        mask_smooth.set_shape(mask_shape)
+        image.set_shape(image_shape)
+        return image, mask_smooth
+
+    def _compute_otsu_threshold(self, mask_smooth):
+        """
+        Return threshold value (for detecting the infocus peas) using the Otsu's method.
+
+        :param mask_smooth: (Tensor) grayscale mask smoothened with a gaussian filter
+        :return: (float) Upper threshold value. All pixels with an intensity higher
+            than this value are assumed to be the object of interest (in-focus pea)
+        """
+        mask_smooth = mask_smooth.numpy()
+
+        # confirm if there is an in-focus pea in the image. If the maximum pixel intensity if
+        # greater than zero, there is an infocus pea, else there isn't.
+        if mask_smooth.max() == 0:
+            threshold = self.no_pea_thresh
+        else:
+            threshold = threshold_otsu(mask_smooth)
+        return threshold
+
+    def _tf_compute_otsu_threshold(self, image, mask_smooth):
+        """
+        Return threshold value based on Otsu's method.
+
+        :param mask_smooth: (Tensor) grayscale mask smoothened with a gaussian filter
+        :return: (float) Upper threshold value. All pixels with an intensity higher
+            than this value are assumed to be the object of interest (in-focus pea)
+        """
+
+        image_shape = image.shape
+        mask_shape = mask_smooth.shape
+
+        threshold = tf.py_function(self._compute_otsu_threshold, [mask_smooth], tf.float64)
+
+        threshold.set_shape(shape=())
+        image.set_shape(image_shape)
+        mask_smooth.set_shape(mask_shape)
+        return image, mask_smooth, threshold
+
+    @staticmethod
+    def _detect_regions_containing_peas(mask_smooth, threshold):
+        """
+        Produce a mask representing the pixel locations occupied by the pea.
+
+        :param mask_smooth: (Tensor) grayscale mask smoothened with a gaussian filter
+        :param threshold: (float) The Otsu's threshold
+        :return: (tensor) Mask of in-focus peas alone, without the edges
+        """
+        mask_smooth = mask_smooth.numpy()
+        threshold = threshold.numpy()
+
+        if threshold == 300:
+            pea_mask = np.where(mask_smooth == 0, False, True)
+            temp_mask = np.where(mask_smooth == 0, 0, 1)
+        else:
+            # Region containing in-focus peas
+            pea_mask = np.where(mask_smooth > threshold, True, False)
+            temp_mask = np.where(mask_smooth > threshold, 1, 0)
+
+        # convert the pea mask to float, so the canny edge diagram can be produced.
+        temp_mask = np.asarray(temp_mask, dtype=np.float64)
+        return pea_mask, temp_mask, threshold
+
+    def _tf_detect_regions_containing_peas(self, image, mask_smooth, threshold):
+        """
+        Produce a mask representing the pixel locations occupied by the pea.
+
+        :param image: (Tensor) RGB image of all the peas
+        :param mask_smooth: (Tensor) grayscale mask smoothened with a gaussian filter
+        :param threshold: (float) The Otsu's threshold
+        :return: (tensor) Mask of in-focus peas alone, without the edges
+        """
+        mask_shape = mask_smooth.shape
+        image_shape = image.shape
+
+        [pea_mask, temp_mask, threshold] = tf.py_function(self._detect_regions_containing_peas,
+                                                          [mask_smooth, threshold],
+                                                          [tf.bool, tf.float64, tf.float64])
+
+        temp_mask.set_shape(shape=mask_shape)
+        pea_mask.set_shape(shape=mask_shape)
+        image.set_shape(image_shape)
+        threshold.set_shape(shape=())
+
+        return image, pea_mask, temp_mask, threshold
+
+    def _produce_whole_peas_without_outline(self, mask_smooth, threshold):
+        """
+        Produce a mask representing the pixel locations occupied by the pea.
+
+        :param mask_smooth: (Tensor) grayscale mask smoothened with a gaussian filter
+        :param threshold: (float) The Otsu's threshold
+        :return: (tensor) Mask of in-focus peas alone, without the edges
+        """
+        mask_smooth = mask_smooth.numpy()
+        threshold = threshold.numpy()
+
+        if threshold == self.no_pea_thresh:
+            pea = np.zeros(shape=(self.height, self.width, 1), dtype=np.float32)
+        else:
+            # Region containing in-focus peas
+            pea_mask = np.where(mask_smooth > threshold, True, False)
+
+            # Add the pea body to the blank mask that already contains the edge
+            pea = np.zeros(shape=(self.height, self.width, 1), dtype=np.float32)
+
+            pea[pea_mask] = 1
+
+        # convert the pea image to float, so the canny edge diagram can be produced.
+        pea = tf.convert_to_tensor(pea, dtype=tf.float32)
+        return pea, pea, threshold
+
+    def _tf_produce_whole_peas_without_outline(self, image, mask_smooth, threshold):
+        """Produce a mask representing the pixel locations occupied by the pea."""
+        mask_shape = (self.height, self.width, 1)
+        image_shape = image.shape
+
+        [pea, temp_mask, threshold] = tf.py_function(self._produce_whole_peas_without_outline, [mask_smooth, threshold],
+                                                     [tf.float32, tf.float32, tf.float64])
+        temp_mask.set_shape(shape=mask_shape)
+        pea.set_shape(shape=mask_shape)
+        image.set_shape(image_shape)
+        threshold.set_shape(shape=())
+        return image, pea, temp_mask, threshold
+
+    @staticmethod
+    def _produce_canny_edges(temp_mask, threshold):
+        """
+        Produce the edges of the peas using the canny edge detector
+
+        :param temp_mask: (Tensor) Mask of the in-focus peas
+        :return: (Tensor) Canny edge diagram of the peas
+        """
+        temp_mask = temp_mask.numpy()
+        threshold = threshold.numpy()
+
+        if threshold == 0:
+            pea_outline_mask = np.zeros_like(a=temp_mask, dtype=np.bool)
+        else:
+            pea_outline_mask = canny(temp_mask)
+        return pea_outline_mask
+
+    def _tf_produce_canny_edge(self, image, pea_mask, temp_mask, threshold):
+        """
+        Produces the edges of the peas using the canny edge detector
+
+        :param image: (Tensor) RGB image of all the peas
+        :param pea_mask:  (Tensor) Mask of the in-focus peas
+        :param temp_mask: (Tensor) Mask of the in-focus peas. temp_mask would be used to obtain
+            the canny edge diagram of the in-focus peas
+        :return: (Tensor) Canny edge diagram of the peas
+        """
+        mask_shape = pea_mask.shape
+        [pea_outline_mask, ] = tf.py_function(self._produce_canny_edges, [temp_mask, threshold], [tf.bool])
+        pea_outline_mask.set_shape(shape=mask_shape)
+        return image, pea_mask, pea_outline_mask
+
+    def _produce_final_mask(self, pea_mask, pea_outline_mask):
+        """
+        Produce the overall mask, made up pixel values  representing of the body of the in-focus
+        peas, their exterior outline (edges), and the background. The pixel intensity for each class
+        is labeled as follows:
+            - background of image:  0
+            - pea outline:  1
+            - peas body: 2
+        :param pea_mask: (Tensor) Mask of the in-focus peas
+        :param pea_outline_mask: (Tensor) Canny edge diagram of the infocus peas
+        :return: mask of pea, their outline and background all together.
+        """
+        pea_outline_mask = pea_outline_mask.numpy()
+        pea_mask = pea_mask.numpy()
+
+        # Add the pea body to the blank mask that already contains the edge
+        new_mask = np.zeros(shape=(self.height, self.width, 1), dtype=np.float32)
+
+        new_mask[pea_mask] = 1
+
+        new_mask[pea_outline_mask] = 2
+        new_mask = tf.convert_to_tensor(new_mask, dtype=tf.float32)
+
+        return new_mask
+
+    def _tf_produce_final_mask(self, image, pea_mask, pea_outline_mask):
+        mask_shape = pea_mask.shape
+        [new_mask, ] = tf.py_function(self._produce_final_mask, [pea_mask, pea_outline_mask], [tf.float32])
+        new_mask.set_shape(mask_shape + (1,))
+        return image, new_mask
+
+    def _prepare_initial_dataset(self, image: tf.Tensor, mask: tf.Tensor):
+        """
+        Reads and decodes and image and its corresponding masks.
+        This function also assigns labels to the the background of the image, the pea's outline and its body. The labels
+        are as follows:
+        - background of image:  0
+        - peas body: 1
+        - pea outline:  2
+
+        :return: (Tensors) Two TF Tensors - one for the rgb image, and the other
+            for the mask, with the pixel locations properly labelled as background (1)
+            pea's body (1), or pea outline (3).
+        """
+        # image, mask = self._tf_read_and_decode_image_and_mask(image_path=image_path, mask_path=mask_path)
+        # image, mask = self._crop_image_and_mask(image=image, mask=mask)
+        # image, mask = self._resize_image_and_mask(image=image, mask=mask) if self.resize_image else (image, mask)
+        image, mask = self._tf_apply_gaussian_filter(image=image, mask=mask)
+        image, mask, threshold = self._tf_compute_otsu_threshold(image=image, mask_smooth=mask)
+
+        image, mask, temp_mask, threshold = self._tf_detect_regions_containing_peas(image=image, mask_smooth=mask,
+                                                                                    threshold=threshold) if \
+            self.detect_outline else self._tf_produce_whole_peas_without_outline(image=image, mask_smooth=mask,
+                                                                                 threshold=threshold)
+
+        image, mask, edge_mask = self._tf_produce_canny_edge(image=image, pea_mask=mask,
+                                                             temp_mask=temp_mask, threshold=threshold) if \
+            self.detect_outline else (image, mask, temp_mask)
+        image, mask = self._tf_produce_final_mask(image, mask, edge_mask) if self.detect_outline else (image, mask)
+        return image, mask
+
+    # STEP-2
+    # Functions for label channel addition and image normalization
+    def _create_weight_map(self, mask):
+        """
+        Creates a weight map of a mask, according to the Unet method
+        :param mask: (numpy array) The mask of the infocus peas
+        :return: (numpy array) The weight map of of the infocus peas (and their outline, if outlines are used)
+        """
+        # The shape of the mask is in the form [height, width, 1], but we need a 2-D array, hence, we
+        # extract the first layer
+        pea_mask = mask[..., 0]
+
+        # If the mask contains no infocus peas, there is no need to continue with the computations below, instead,
+        # return a weight map containing ones, so that when the predicted mask is multiplied by the weight map of ones,
+        # the predicted mask does not changed.
+        if pea_mask.numpy().max() == 0:
+            weight_map = tf.ones(shape=(self.height, self.width, 1), dtype=tf.float64)
+            return weight_map
+        else:
+            # label each pea with integer values
+            labelled_pea_mask = label(pea_mask)
+
+            # obtain the regions on the mask containing infocus peas, and the region occupied by the background
+            pea_binary_mask = labelled_pea_mask > 0
+            background = (labelled_pea_mask == 0)
+
+            # compute the number of peas within the mask
+            no_of_peas = (len(np.unique(labelled_pea_mask)) // 2) - 1 if self.apply_unet_edge_weights else \
+                len(np.unique(labelled_pea_mask)) - 1
+
+            # check if more than one peas is contained in the mask
+            multiple_peas_exist = (no_of_peas > 1)
+
+            if self.apply_unet_edge_weights and multiple_peas_exist:
+                # locate the inner segmentation boundaries of the peas within the mask
+                pea_boundaries = find_boundaries(label_img=labelled_pea_mask, mode='inner')
+
+                # obtain the body of the pea, within the pea's inner boundary
+                pea_body_excluding_the_boundary = np.bitwise_xor(pea_binary_mask, pea_boundaries)
+
+                # compute the class weight for the foreground and background, based on the area occupied by each class.
+                # Since the foreground occupies less area, it should be given more weight so that its loss would be
+                # penalized more. By so doing, the model would identity the foreground more accurately.
+                total_foreground_pixels = np.sum(pea_body_excluding_the_boundary, axis=(0, 1))
+                total_background_pixels = np.sum(background, axis=(0, 1))
+                total_foreground_and_background_pixels = pea_mask.numpy().size
+
+                if self.use_log_weights:
+                    background_weight = np.log10(total_foreground_and_background_pixels / total_background_pixels)
+
+                    if total_foreground_pixels == 0:
+                        foreground_weight = 1
+                    else:
+                        foreground_weight = np.log10(total_foreground_and_background_pixels / total_foreground_pixels)
+
+                else:
+                    if total_foreground_pixels == 0:
+                        foreground_weight = 1
+                    else:
+                        foreground_weight = 1 - total_foreground_pixels / total_foreground_and_background_pixels
+                    background_weight = 1 - foreground_weight
+
+                # produce a list containing the unique label id for each infocus pea in the mask
+                pea_ids = [x for x in np.unique(labelled_pea_mask) if x > 0]
+
+                # produce a 3-D array to store the euclidean distances for each of the infocus pea. Each
+                # layer in the third axis would be used to store the distance a single pea and other peas.
+                euclidean_distances = np.zeros(shape=(self.height, self.width, len(pea_ids)))
+
+                # compute the Euclidean distance of individual peas, starting from a particular pea that has a given
+                # pea_id
+                for i, pea_id in enumerate(pea_ids):
+                    euclidean_distances[..., i] = distance_transform_edt(labelled_pea_mask != pea_id)
+
+                # Sort the Euclidean distance so we could choose the least two for each pea (connected component)
+                euclidean_distances.sort(axis=-1)
+
+                # Select the smallest and second to smallest euclidean distance for each pea
+                d1 = euclidean_distances[..., 0]
+                d2 = euclidean_distances[..., 1]
+                weight_map = self.w0 * np.exp(-(1 / (2 * self.sigma ** 2)) * ((d1 + d2) ** 2))
+
+                # Adjusting the weight map associated with the body of the pea (excluding the boundaries), using
+                # the class weight for  pea's body (foreground)
+                weight_map[pea_body_excluding_the_boundary] = foreground_weight
+
+                # Adjusting the weight map associated with the background, using the class weight for
+                weight_map[~pea_body_excluding_the_boundary] += background_weight
+
+                # make the weight map a 3-D array, by adding an additional axis, so that the weight map would be able
+                # to multiply the 3-D activation value (output) from the Unet
+                weight_map = weight_map[..., np.newaxis]
+
+                return weight_map
+            else:
+                # compute the class weight for the foreground and background, based on the area occupied by each class.
+                # Since the foreground occupies less area, it should be given more weight so that its loss would be
+                # penalized more. By so doing, the model would identity the foreground more accurately.
+                total_foreground_pixels = np.sum(pea_binary_mask, axis=(0, 1))
+                total_background_pixels = np.sum(background, axis=(0, 1))
+                total_foreground_and_background_pixels = pea_mask.numpy().size
+
+                if self.use_log_weights:
+                    background_weight = np.log10(total_foreground_and_background_pixels / total_background_pixels)
+
+                    if total_foreground_pixels == 0:
+                        foreground_weight = 1
+                    else:
+                        foreground_weight = np.log10(total_foreground_and_background_pixels / total_foreground_pixels)
+
+                else:
+                    if total_foreground_pixels == 0:
+                        foreground_weight = 1
+                    else:
+                        foreground_weight = 1 - total_foreground_pixels / total_foreground_and_background_pixels
+                    background_weight = 1 - foreground_weight
+
+                weight_map = np.zeros(shape=(self.height, self.width), dtype=np.float64)
+
+                # Adjusting the weight map associated with the body of the pea (excluding the boundaries), using
+                # the class weight for  pea's body (foreground)
+                weight_map[pea_binary_mask] = foreground_weight
+
+                # Adjusting the weight map associated with the background, using the class weight for
+                weight_map[~pea_binary_mask] += background_weight
+
+                # make the weight map a 3-D array, so that it would be able to multiply the 3-D activation map/mask
+                # (output) produce by Unet
+                weight_map = weight_map[..., np.newaxis]
+                return weight_map
+
+    def _tf_create_weight_map(self, image, mask):
+        # pea_mask = mask.numpy()
+        [weight_map, ] = tf.py_function(func=self._create_weight_map, inp=[mask], Tout=[tf.float64])
+        weight_map.set_shape(shape=(self.height, self.width, 1))
+        return image, mask, weight_map
+
+    def _introduce_weight_map_of_ones(self, image, mask):
+        """This function introduces a weight map of ones"""
+        weight_map_of_ones = tf.ones(shape=(self.height, self.width, 1), dtype=tf.float64)
+        return image, mask, weight_map_of_ones
+
+    def _add_label_channels_to_mask(self, image, mask, weight_map):
+        """Adds label channels to the mask."""
+        mask = tf.cast(mask, dtype=tf.uint8)
+        stack_list = []
+
+        # Create individual tensor array for each class. Each tensor would display the area on the original
+        # mask that is occupied by individual classes. if we have three class - background, pea, and outline,
+        # we would have three tensor arrays.
+        for class_index in range(self.number_of_classes):
+            # Produce a temporary mask depicting all the pixel locations on the original tensor named 'mask'
+            # that have the same pixel intensity as  the the integer 'class_index'. we want to
+            temp_mask = tf.equal(mask[:, :, 0], tf.constant(class_index, dtype=tf.uint8))
+            # add each temporary mask to the stack_list.
+            stack_list.append(tf.cast(temp_mask, dtype=tf.uint8))
+
+        # stack all the temporary masks within the stack_list, so together they form the third axis of the
+        # overall mask. Hence, the overall mask would be of dimension [height, width, number_of_classes]
+        mask = tf.stack(stack_list, axis=2)  # Axis starts from 0, so axis of 2 represents the third axis
+        return image, mask, weight_map
+
+    def _add_label_channels_to_val_or_test_mask(self, image, mask):
+        """Adds label channels to the mask."""
+        mask = tf.cast(mask, dtype=tf.uint8)
+        stack_list = []
+
+        # Create individual tensor array for each class. Each tensor would display the area on the original
+        # mask that is occupied by individual classes. if we have three class - background, pea, and outline,
+        # we would have three tensor arrays.
+        for class_index in range(self.number_of_classes):
+            # Produce a temporary mask depicting all the pixel locations on the original tensor named 'mask'
+            # that have the same pixel intensity as  the the integer 'class_index'. we want to
+            temp_mask = tf.equal(mask[:, :, 0], tf.constant(class_index, dtype=tf.uint8))
+            # add each temporary mask to the stack_list.
+            stack_list.append(tf.cast(temp_mask, dtype=tf.uint8))
+
+        # stack all the temporary masks within the stack_list, so together they form the third axis of the
+        # overall mask. Hence, the overall mask would be of dimension [height, width, number_of_classes]
+        mask = tf.stack(stack_list, axis=2)  # Axis starts from 0, so axis of 2 represents the third axis
+        return image, mask
+
+    def _normalize_image(self, image, mask, weight_map):
+        """Normalizes the pixel values of image to lie between [0, 1] or [-1, 1]."""
+        if self.normalize_using_255:
+            image = tf.cast(image, dtype=tf.float32) / 255.0
+        else:
+            image = tf.cast(image, dtype=tf.float32) / 127.5
+            image -= 1
+        return image, mask, weight_map
+
+    def _normalize_val_or_test_image(self, image, mask):
+        """Normalizes the pixel values of image to lie between [0, 1] or [-1, 1]."""
+        if self.normalize_using_255:
+            image = tf.cast(image, dtype=tf.float32) / 255.0
+        else:
+            image = tf.cast(image, dtype=tf.float32) / 127.5
+            image -= 1
+        return image, mask
+
+    @tf.function
+    def _step2_produce_weightmap_add_channels_and_normalize_train_set(self, image, mask):
+        """
+        Augments the image and mask, then adds appropriate number of channels to the mask, in line with
+        the number of classes
+        :param image: (Tensor) - RGB image
+        :param mask: (Tensor) - Mask
+        :return: (Tensors) - image and mask
+        """
+        image, mask, weight_map = self._tf_create_weight_map(image, mask) if self.apply_weight_maps \
+            else self._introduce_weight_map_of_ones(image, mask)
+        image, mask, weight_map = self._add_label_channels_to_mask(image, mask, weight_map)
+        image, mask, weight_map = self._normalize_image(image, mask, weight_map)
+        return image, mask, weight_map
+
+    @tf.function
+    def _step2_add_channels_and_normalize_validation_sets(self, image, mask):
+        """
+        Augments the image and mask, then adds appropriate number of channels to the mask, in line with
+        the number of classes
+        :param image: (Tensor) - RGB image
+        :param mask: (Tensor) - Mask
+        :return: (Tensors) - image and mask
+        """
+        image, mask = self._add_label_channels_to_val_or_test_mask(image, mask)
+        image, mask = self._normalize_val_or_test_image(image, mask)
+        return image, mask
+
+    @tf.function
+    def _step2_add_channels_and_normalize_test_sets(self, image, mask):
+        """
+        Augments the image and mask, then adds appropriate number of channels to the mask, in line with
+        the number of classes
+        :param image: (Tensor) - RGB image
+        :param mask: (Tensor) - Mask
+        :return: (Tensors) - image and mask
+        """
+        image, mask = self._add_label_channels_to_val_or_test_mask(image, mask)
+        image, mask = self._normalize_val_or_test_image(image, mask)
+        return image, mask
+
+    # Get training, validation and test sets
+    def _get_training_dataset(self):
+        """
+        Prepares shuffled batches of the training set.
+
+        :return: tf Dataset containing the preprocessed training set
+        """
+        training_dataset = self.training_dataset.map(self._prepare_initial_dataset,
+                                                     num_parallel_calls=self.tune)
+        training_dataset = training_dataset.map(self._step2_produce_weightmap_add_channels_and_normalize_train_set,
+                                                num_parallel_calls=self.tune)
+        if self.include_visual_attributes and self.include_visual_attribute_weights:
+            training_dataset = tf.data.Dataset.zip((training_dataset, self.training_visual_props_dataset,
+                                                    self.train_visual_props_weights_dataset))
+
+            training_dataset = training_dataset.map(
+                lambda a, b, c: ({'image': a[0]},  # image
+                                 # #ground truth data
+                                 {'predicted_mask': a[1],  # mask for computing loss of predicted mask
+                                  'processed_mask': a[1]},  # mask for computing loss of morph processed mask
+                                 {self.visual_attributes[i]: value for i, value in enumerate(b.values())},
+
+                                 # sample weights
+                                 {'predicted_mask': a[2]},
+                                 # weight for computing for adjusting weight of predicted mask
+                                 {self.visual_attributes[i]: weight for i, weight in enumerate(c.values())}))
+
+            training_dataset = training_dataset.map(
+                lambda a, b, c, d, e: (a,
+                                       {**b, **c},  # merge ground true data
+                                       {**d, **e}))  # merge weights
+
+        elif self.include_visual_attributes:
+            training_dataset = tf.data.Dataset.zip((training_dataset, self.training_visual_props_dataset))
+            # a is a tuple containing the rgb image, ground truth mask and sample weight map. While b is a dictionary
+            # that contains the corresponding visual attributes for each each rgb image.
+            training_dataset = training_dataset.map(
+                lambda a, b: ({'image': a[0]},  # image
+                              # ground truth data
+                              {'predicted_mask': a[1],  # mask for computing loss of predicted mask
+                               'processed_mask': a[1]},  # mask for computing loss of morph processed mask
+                              {self.visual_attributes[i]: value for i, value in enumerate(b.values())},
+
+                              # sample weights
+                              {'predicted_mask': a[2]}))
+
+            training_dataset = training_dataset.map(
+                lambda a, b, c, d: (a,
+                                    {**b, **c},  # merge masks and visual attributes
+                                    d))
+        else:
+            training_dataset = training_dataset.map(
+                lambda x, y, z: ({'image': x},  # image
+                                 # mask for computing loss of the predicted and processed mask
+                                 {'predicted_mask': y,
+                                  'processed_mask': y},
+                                 # weight to compute loss of the morphologically processed mask
+                                 {'predicted_mask': z}))
+
+        training_dataset = training_dataset.take(count=-1)
+        training_dataset = training_dataset.cache(filename=self.train_cache)
+        training_dataset = training_dataset.shuffle(buffer_size=self.train_shuffle_size) if \
+            self.shuffle else training_dataset
+        training_dataset = training_dataset.batch(self.batch_size, drop_remainder=True)
+        training_dataset = training_dataset.repeat() if self.prefetch_data else training_dataset
+        training_dataset = training_dataset.prefetch(self.tune) if self.prefetch_data else training_dataset
+        return training_dataset
+
+    def _get_validation_dataset(self):
+        """
+        Prepares batches of the validation set.
+
+        :return: tf Dataset containing the preprocessed validation set
+        """
+        validation_dataset = self.validation_dataset.map(self._prepare_initial_dataset,
+                                                         num_parallel_calls=self.tune)
+        validation_dataset = validation_dataset.map(self._step2_add_channels_and_normalize_validation_sets,
+                                                    num_parallel_calls=self.tune)
+        if self.include_visual_attributes:
+            validation_dataset = tf.data.Dataset.zip((validation_dataset, self.validation_visual_props_dataset))
+            # a is a tuple containing the rgb image, ground truth mask and sample weight map. While b is a dictionary
+            # that contains the corresponding visual attributes for each each rgb image.
+            validation_dataset = validation_dataset.map(
+                lambda a, b: ({'image': a[0]},  # image
+                              # ground truth data
+                              {'predicted_mask': a[1],  # mask for computing loss of predicted mask
+                               'processed_mask': a[1]},  # mask for computing loss of morph processed mask
+                              {self.visual_attributes[i]: value for i, value in enumerate(b.values())}))
+
+            validation_dataset = validation_dataset.map(
+                lambda a, b, c: (a,
+                                 {**b, **c}))  # merge ground true data
+
+        else:
+            validation_dataset = validation_dataset.map(lambda x, y: ({'image': x},  # image
+                                                                      {'predicted_mask': y,
+                                                                       'processed_mask': y}))  # mask
+        validation_dataset = validation_dataset.take(count=-1)
+        validation_dataset = validation_dataset.cache(filename=self.val_cache)
+        validation_dataset = validation_dataset.shuffle(
+            buffer_size=self.validation_shuffle_size) if self.shuffle_validation_data else validation_dataset
+        validation_dataset = validation_dataset.batch(self.batch_size, drop_remainder=True)
+        validation_dataset = validation_dataset.repeat() if self.prefetch_data else validation_dataset
+        validation_dataset = validation_dataset.prefetch(buffer_size=self.tune) \
+            if self.prefetch_data else validation_dataset
+        return validation_dataset
+
+    def _get_test_dataset(self):
+        """
+        Prepares batches of the test set.
+
+        :return: tf Dataset containing the preprocessed test set
+        """
+        test_dataset = self.test_dataset.map(self._prepare_initial_dataset,
+                                             num_parallel_calls=self.tune)
+        test_dataset = test_dataset.map(self._step2_add_channels_and_normalize_test_sets, num_parallel_calls=self.tune)
+        if self.include_visual_attributes:
+            test_dataset = tf.data.Dataset.zip((test_dataset, self.test_visual_props_dataset))
+
+            # a is a tuple containing the rgb image, ground truth mask and sample weight map. While b is a dictionary
+            # that contains the corresponding visual attributes for each each rgb image.
+            test_dataset = test_dataset.map(
+                lambda a, b: ({'image': a[0]},  # image
+                              # ground truth data
+                              {'predicted_mask': a[1],  # mask for computing loss of predicted mask
+                               'processed_mask': a[1]},  # mask for computing loss of morph processed mask
+                              {self.visual_attributes[i]: value for i, value in enumerate(b.values())}))
+
+            test_dataset = test_dataset.map(
+                lambda a, b, c: (a,
+                                 {**b, **c}))  # merge ground true data
+        else:
+            test_dataset = test_dataset.map(
+                lambda x, y: ({'image': x},  # image
+                              {'predicted_mask': y,  # to compute loss of the predicted mask
+                               'processed_mask': y}))  # to compute loss of the morphologically processed mask
+
+        test_dataset = test_dataset.take(count=-1)
+        test_dataset = test_dataset.cache(filename=self.test_cache)
+        test_dataset = test_dataset.batch(self.batch_size, drop_remainder=True)
+        test_dataset = test_dataset.repeat() if self.prefetch_data else test_dataset
+        return test_dataset
+
+    def _produce_train_val_test_datasets(self):
+        """
+        Produces the training, validation and test datasets.
+        """
+        if self.train_directory is not None:
+            self.training_dataset = self._get_training_dataset()
+
+        if self.validation_directory is not None:
+            self.validation_dataset = self._get_validation_dataset()
+
+        if self.test_directory is not None:
+            self.test_dataset = self._get_test_dataset()
+
+    @staticmethod
+    def get_images_and_masks_from_dataset(dataset, no_of_images):
+        """
+        This function produces a list of images, and a list of corresponding masks, from a tf dataset object.
+
+        :param dataset: (tf dataset): Dataset containing images and corresponding mask
+        :param no_of_images: Number of images to be in the lis
+        :return: List of images and list of masks (label maps)
+        """
+        images = []
+        masks = []
+
+        ds = dataset.unbatch()
+        ds = ds.batch(no_of_images)
+
+        for image_batch, mask_batch in ds.take(1):
+            images = image_batch
+            # The mask has n number of slices equal to the number of classes, get the slice pixel locations with the
+            # highest probability.
+            masks = np.argmax(mask_batch, axis=3)
+        return images, masks
 
 
 class VisualAttributesDatasetCreator:
