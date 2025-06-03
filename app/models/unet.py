@@ -7,12 +7,16 @@ from app.utils import ModelUtilities, UnetExporter
 from app.layers import Decoder, Encoder, BottleNeck
 from app.layers import PostProcessMask, InfocusPeas, MergeLabelAxis
 
+from typing import Optional, Tuple
+
 
 @register_keras_serializable(package='Unet', name='Unet')
 class UNet(Model, ModelUtilities):
     """UNet semantic segmentation model."""
     def __init__(self,
                  num_classes: int,
+                 input_shape: Optional[Tuple[int, int, int
+                 ]] = None,
                  dropout_rate: float = 0.0,
                  l2_reg_factor: float = None,
                  post_process: bool = False,
@@ -30,6 +34,10 @@ class UNet(Model, ModelUtilities):
         """
 
         :param num_classes: (int) Number of classes
+        :param input_shape: (Tuple) A tuple specifying the full shape of a single input sample,
+            including height, width, and number of channels (e.g., `(1024, 1024, 3)` for RGB images).
+            This excludes the batch dimension, which is added automatically as `None` during model building.
+            If input_shape is provided, the model is automatically built on initialization.
         :param dropout_rate: (float) The dropout rate for the UNet Model.
         :param l2_reg_factor: (float) The L2-regularization factor that will be applied during model training.
         :param post_process: (bool) Whether to apply morphological postprocessing after segmentation or not.
@@ -56,6 +64,7 @@ class UNet(Model, ModelUtilities):
         """
         Model.__init__(self, name=name, **kwargs)
 
+        self.image_shape = input_shape
         self.output_name = output_name
         self.input_name = input_name
         self.post_process = post_process
@@ -93,6 +102,9 @@ class UNet(Model, ModelUtilities):
         self.infocus_peas = InfocusPeas(name='infocus_peas')
         # Layer to convert a 3D masks to 2D, by merging the label axis.
         self.merge_label_axis = MergeLabelAxis(name='merged_mask')
+
+        if input_shape is not None:
+            self.build((None, *input_shape))
 
     def __repr__(self):
         return f"{self.name}"
@@ -204,4 +216,5 @@ class UNet(Model, ModelUtilities):
         # Run backwards pass.
         self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
         return self.compute_metrics(x, y, y_pred, sample_weight)
+
 
