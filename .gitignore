@@ -97,9 +97,12 @@ morph-and-split-key.json
 morph-and-split-toolset-key.json
 morph-and-split-toolkit-key.json
 
-/drying_package
+/drying_package/
 /checkpoint
 /model_weight.keras
 /my_weights.keras
 /practice.ipynb
 /unet_dataset_creator.ipynb
+/model_weights/
+/saved_models/
+/assets/
