@@ -1,4 +1,4 @@
-from typing import Union, Optional, Dict
+from typing import Union, Optional, Dict, List, Tuple
 
 import tensorflow as tf
 from keras import Model
@@ -101,6 +101,19 @@ class ModelUtilities:
             layer.trainable = False
 
         return
+
+    def set_weights_from_layers(self, layers: Union[List[Layer], Tuple[Layer]]) -> None:
+        """
+        Load weights from a list of layers into the current model layers (by matching layer names).
+        Args:
+            layers (Union[List[Layer], Tuple[Layer]]): A collection of Keras Layer objects with weights to load.
+        """
+        inner_layers = self.get_inner_layers()
+
+        for layer in layers:
+            name = layer.name
+            if name in inner_layers:
+                inner_layers.get(name).set_weights(layer.get_weights())
 
 
 class L2Regularizer:
