@@ -17,7 +17,7 @@ from skimage.measure import label
 from skimage.segmentation import find_boundaries
 
 from app.utils import create_directory
-from drying_package.directoryFunctions import create_directory
+from app.utils.directory_file_management import create_directory
 
 
 class ImageAndMaskDatasetBuilder:
@@ -416,7 +416,6 @@ class ImageMaskVisualDatasetBuilder:
                  validation_directory: Optional[str] = None,
                  test_directory: Optional[str] = None,
                  final_image_shape: Tuple[int, int] = (1024, 1024),
-                 original_image_size: Tuple[int, int] = (2000, 2000),
                  apply_weight_maps: bool = True,
                  use_log_weights: bool = False,
                  apply_unet_edge_weights: bool = False,
@@ -433,7 +432,7 @@ class ImageMaskVisualDatasetBuilder:
                  shuffle_validation_data=False,
                  validation_shuffle_size: Optional[int] =100,
                  prefetch_data: bool = True,
-                 cache_directory='',
+                 cache_directory: Optional[str]=None,
                  overwrite_existing_cache_directory: bool = True,
                  include_visual_attributes: bool = True,
                  include_visual_attribute_weights: bool = True,
@@ -556,10 +555,14 @@ class ImageMaskVisualDatasetBuilder:
         self.w0 = w0
         self.sigma = sigma
         self.normalize_using_255 = normalize_using_255
+
+        self.shuffle = shuffle
         self.train_shuffle_size = train_shuffle_size
         self.validation_shuffle_size = validation_shuffle_size
         self.shuffle_validation_data = shuffle_validation_data
+
         self.batch_size = batch_size
+
         self.number_of_classes = len(self.class_names)
         self.detect_outline = True if self.number_of_classes == 3 else False
 
@@ -568,17 +571,23 @@ class ImageMaskVisualDatasetBuilder:
         self.cache_directory = cache_directory
         self.prefetch_data = prefetch_data
 
+        # Cache directories
         self.overwrite_cache_dir = overwrite_existing_cache_directory
-        if self.cache_directory:
-            self.train_cache = create_directory(os.path.join(self.cache_directory, 'train'), return_dir=True,
-                                                overwrite_if_existing=self.overwrite_cache_dir)
-            self.val_cache = create_directory(os.path.join(self.cache_directory, 'val'), return_dir=True,
-                                              overwrite_if_existing=self.overwrite_cache_dir)
-            self.test_cache = create_directory(os.path.join(self.cache_directory, 'test'), return_dir=True,
-                                               overwrite_if_existing=self.overwrite_cache_dir)
+        if isinstance(cache_directory, str):
+            if cache_directory != '':
+                self.train_cache = create_directory(os.path.join(self.cache_directory, 'train'),
+                                                    return_dir=True,
+                                                    overwrite_if_existing=self.overwrite_cache_dir)
+                self.val_cache = create_directory(os.path.join(self.cache_directory, 'val'),
+                                                  return_dir=True,
+                                                  overwrite_if_existing=self.overwrite_cache_dir)
+                self.test_cache = create_directory(os.path.join(self.cache_directory, 'test'),
+                                                   return_dir=True,
+                                                   overwrite_if_existing=self.overwrite_cache_dir)
+            else:
+                self.train_cache = self.val_cache = self.test_cache = ''
         else:
-            self.train_cache = self.val_cache = self.test_cache = ''
-        self.shuffle = shuffle
+            self.train_cache = self.val_cache = self.test_cache = None
 
 
         if train_visual_attributes_json_path is not None:
@@ -1175,9 +1184,11 @@ class ImageMaskVisualDatasetBuilder:
                                  {'predicted_mask': z}))
 
         # training_dataset = training_dataset.take(count=-1)
-        training_dataset = training_dataset.cache(filename=self.train_cache)
-        training_dataset = training_dataset.shuffle(buffer_size=self.train_shuffle_size) if \
-            self.shuffle else training_dataset
+        training_dataset = training_dataset.cache(filename=self.train_cache) \
+            if self.train_cache else training_dataset
+
+        training_dataset = training_dataset.shuffle(buffer_size=self.train_shuffle_size) \
+            if self.shuffle else training_dataset
         training_dataset = training_dataset.batch(self.batch_size, drop_remainder=True)
         training_dataset = training_dataset.repeat() if self.prefetch_data else training_dataset
         training_dataset = training_dataset.prefetch(self.tune) if self.prefetch_data else training_dataset
@@ -1211,9 +1222,12 @@ class ImageMaskVisualDatasetBuilder:
         else:
             validation_dataset = validation_dataset.map(lambda x, y: ({'image': x},  # image
                                                                       {'predicted_mask': y,
-                                                                       'processed_mask': y}))  # mask
+                                                                       'processed_mask': y}
+                                                                      ))  # mask
+
         # validation_dataset = validation_dataset.take(count=-1)
-        validation_dataset = validation_dataset.cache(filename=self.val_cache)
+        validation_dataset = validation_dataset.cache(filename=self.val_cache) \
+            if self.val_cache else validation_dataset
         validation_dataset = validation_dataset.shuffle(
             buffer_size=self.validation_shuffle_size) if self.shuffle_validation_data else validation_dataset
         validation_dataset = validation_dataset.batch(self.batch_size, drop_remainder=True)
@@ -1253,7 +1267,8 @@ class ImageMaskVisualDatasetBuilder:
                                'processed_mask': y}))  # to compute loss of the morphologically processed mask
 
         # test_dataset = test_dataset.take(count=-1)
-        test_dataset = test_dataset.cache(filename=self.test_cache)
+        test_dataset = test_dataset.cache(filename=self.test_cache) \
+            if self.test_cache else test_dataset
         test_dataset = test_dataset.batch(self.batch_size, drop_remainder=True)
         test_dataset = test_dataset.repeat() if self.prefetch_data else test_dataset
         return test_dataset
