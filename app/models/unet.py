@@ -2,10 +2,10 @@ import tensorflow as tf
 from tensorflow.keras import Model
 from tensorflow.keras.utils import unpack_x_y_sample_weight
 from tensorflow.keras.saving import register_keras_serializable
-from app.utils import ModelUtilities, UnetExporter
+from app.utils import ModelUtilities, UNetTFModule
 
-from app.layers import Decoder, Encoder, BottleNeck
-from app.layers import PostProcessMask, InfocusPeas, MergeLabelAxis
+from app.layers import Decoder, Encoder, BottleNeck, PostProcessMask
+from app.layers import ForegroundExtractor, MergeLabelAxis
 
 from typing import Optional, Tuple
 
@@ -27,7 +27,7 @@ class UNet(Model, ModelUtilities):
                  min_size: int = 2000,
                  area_threshold: int = 300,
                  return_dict: bool = True,
-                 input_name: str = 'images',
+                 input_name: str = 'image',
                  output_name: str = 'predicted_mask',
                  name='UNET',
                  **kwargs):
@@ -52,15 +52,14 @@ class UNet(Model, ModelUtilities):
         :param min_size: The smallest allowable object size, that will not be treated as noise when applying
             morphological (post-segmentation) operation on predicted mask.
         :param area_threshold: (int) The maximum area, in pixels, of a contiguous hole that will be filled,
-            during post-processing.Replaces `min_size`.
+            during post-processing.
         :param return_dict: If `True`, the predicted outputs are returned as a
               dict, with each key being the name of an output. If return_dict is set
               to `False`, the outputs are returned as a list.
               While return_dict is `True`, if `post_process` is `False`, the dict key
               will be `predicted_mask`, if `post_process` is `True`, the dict keys will
-              be [`predicted`, `processed_2d_mask`, and `processed_3d_mask`].
+              be [`predicted_mask`, `processed_mask`, `processed_2d_mask`].
         :param name: Name of the model, set as `UNET` by default.
-        :param kwargs:
         """
         Model.__init__(self, name=name, **kwargs)
 
@@ -87,66 +86,73 @@ class UNet(Model, ModelUtilities):
                                dropout_rate=dropout_rate,
                                l2_reg_factor=l2_reg_factor)
 
-        if post_process:
-            # Post-processing layer
-            self.morphological_layer = PostProcessMask(num_classes=num_classes,
-                                                       opening_radius=opening_radius,
-                                                       closing_radius=closing_radius,
-                                                       erosion_radius=erosion_radius,
-                                                       dilation_radius=dilation_radius,
-                                                       min_size=min_size,
-                                                       area_threshold=area_threshold,
-                                                       name='processed_2D_mask')
+        # if post_process:
+        #     # Post-processing layer
+        self.morphological_layer = PostProcessMask(num_classes=num_classes,
+                                                   opening_radius=opening_radius,
+                                                   closing_radius=closing_radius,
+                                                   erosion_radius=erosion_radius,
+                                                   dilation_radius=dilation_radius,
+                                                   min_size=min_size,
+                                                   area_threshold=area_threshold,
+                                                   name='processed_2D_mask')
 
         # Layer to generate RGB version of the segmented result
-        self.infocus_peas = InfocusPeas(name='infocus_peas')
+        self.foreground = ForegroundExtractor(name='infocus_peas')
+
         # Layer to convert a 3D masks to 2D, by merging the label axis.
         self.merge_label_axis = MergeLabelAxis(name='merged_mask')
 
+        self.built = False
+
         if input_shape is not None:
             self.build((None, *input_shape))
+            self.built = True
 
     def __repr__(self):
         return f"{self.name}"
 
-    def call(self, inputs, training=None, mask=None):
+    def call(self, inputs):
         """Segments an image and returns the segmentation mask."""
         if isinstance(inputs, dict):
             inputs = inputs[self.input_name]
+
         encoder_output, convs = self.encoder(inputs)
         bottleneck = self.bottleneck(encoder_output)
         predicted_mask = self.decoder([bottleneck, convs])
 
-        if not self.post_process:
-            if self.return_dict:
-                return {self.output_name: predicted_mask}
-            return predicted_mask
+        if self.post_process:
+            # apply morphological operation on the predicted mask.
+            processed_2d_mask, processed_3d_mask = self.morphological_layer(predicted_mask)
+        else:
+            processed_2d_mask = tf.ones(tf.shape(predicted_mask), dtype=tf.float32)
+            processed_3d_mask = tf.ones(tf.shape(predicted_mask), dtype=tf.float32)
 
-        # Apply minor morphological steps
-        processed_2d_mask, processed_3d_mask = self.morphological_layer(predicted_mask)
+        # return output as a dict if the inputs are supplied as dict in the tf.Dataset
         if self.return_dict:
             return {self.output_name: predicted_mask,
+                    'processed_mask': processed_3d_mask,
                     'processed_2d_mask': processed_2d_mask,
-                    'processed_3d_mask': processed_3d_mask}
-
-        return predicted_mask, processed_2d_mask, processed_3d_mask
+                    }
+        return predicted_mask, processed_3d_mask, processed_2d_mask
 
     def segment(self, image_dict: dict):
-        """Returns an RGB image containing only the objects of interest"""
+        """Returns an RGB image containing only the objects of interest or foreground"""
         if not isinstance(image_dict, dict):
             image_dict = {self.input_name: image_dict}
 
         # Generate segmentation mask
         mask = self(image_dict)
 
-        # produce RGB image of infocus peas
+        # produce RGB image containing only foreground/objects of interest (e.g., infocus peas)
         if self.post_process:
-            infocus_peas = self.infocus_peas([mask['processed_2d_mask'], image_dict['image']])
+            foreground = self.foreground([mask['processed_2d_mask'],
+                                            image_dict['image']])
         else:
             predicted_2d_mask = self.merge_label_axis(mask[self.output_name])
-            infocus_peas = self.infocus_peas([predicted_2d_mask, image_dict[self.input_name]])
+            foreground = self.foreground([predicted_2d_mask, image_dict[self.input_name]])
 
-        return {'infocus_peas': infocus_peas}
+        return {'infocus_peas': foreground}
 
     @property
     def trainable_layers(self):
@@ -159,7 +165,7 @@ class UNet(Model, ModelUtilities):
         the `Unet.segment()` method wrapped in a `tf.function`,
         thus, increasing the computational speed.
         """
-        return UnetExporter(self)
+        return UNetTFModule(self)
 
     def get_config(self):
         config = super().get_config()
@@ -175,46 +181,5 @@ class UNet(Model, ModelUtilities):
                        "area_threshold": self.area_threshold,
                        'name': self.name})
         return config
-
-    def train_step(self, data):
-        """The logic for one training step.
-
-        This method can be overridden to support custom training logic.
-        For concrete examples of how to override this method see
-        [Customizing what happens in fit](
-        https://www.tensorflow.org/guide/keras/customizing_what_happens_in_fit).
-        This method is called by `Model.make_train_function`.
-
-        This method should contain the mathematical logic for one step of
-        training.  This typically includes the forward pass, loss calculation,
-        backpropagation, and metric updates.
-
-        Configuration details for *how* this logic is run (e.g. `tf.function`
-        and `tf.distribute.Strategy` settings), should be left to
-        `Model.make_train_function`, which can also be overridden.
-
-        Args:
-          data: A nested structure of `Tensor`s.
-
-        Returns:
-          A `dict` containing values that will be passed to
-          `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
-          values of the `Model`'s metrics are returned. Example:
-          `{'loss': 0.2, 'accuracy': 0.7}`.
-        """
-        x, y, sample_weight = unpack_x_y_sample_weight(data)
-
-        # Run forward pass.
-        with tf.GradientTape() as tape:
-            y_pred = self(x, training=True)
-            loss = self.compute_loss(x, y, y_pred, sample_weight)
-        self._validate_target_and_loss(y, loss)
-
-        print(f"\n\ny_pred: {y_pred}-{type(loss).__name__}\n"
-              f"target: {y}-{type(loss).__name__}\n"
-              f"loss: {loss}-{type(loss).__name__}\n")
-        # Run backwards pass.
-        self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
-        return self.compute_metrics(x, y, y_pred, sample_weight)
 
 
