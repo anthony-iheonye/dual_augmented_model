@@ -15,6 +15,7 @@ class ModelUtilities:
     def __init__(self):
         self.name: Optional[str] = None
         self.trainable_layers: Optional[list[XLayer]] = None
+        self.built = False
 
     def get_inner_layers(self) -> Dict[str, XLayer]:
         """
@@ -108,6 +109,14 @@ class ModelUtilities:
         Args:
             layers (Union[List[Layer], Tuple[Layer]]): A collection of Keras Layer objects with weights to load.
         """
+
+        if not self.built:
+            raise ValueError(
+                "You called `set_weights_from_layers` on a model that has not been built.\n"
+                "Please run `model.build((None, height, width, channels))` before calling this method, "
+                "or pass `input_shape` when instantiating the model to ensure it is built automatically."
+            )
+
         inner_layers = self.get_inner_layers()
 
         for layer in layers:
@@ -168,14 +177,15 @@ class LayerExtractor:
         return result
 
 
-class UnetExporter(tf.Module):
-    """Create a tf.Module version of a tf.keras.Model"""
+class UNetTFModule(tf.Module):
+    """Create a tf.Module version of a UNet tf.keras model. The UNet module would have a segment method."""
     def __init__(self, model, **kwargs):
         super().__init__(**kwargs)
         self.model = model
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def segment(self, image: tf.Tensor):
+        """Returns an RGB image containing only the objects of interest or foreground"""
         return self.model.segment(image)
 
 
