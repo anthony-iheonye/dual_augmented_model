@@ -276,3 +276,19 @@ class PostProcessMask(Layer):
                        "min_size": self.min_size,
                        "area_threshold": self.area_threshold})
         return config
+
+
+@register_keras_serializable(package='Unet', name='PassThrough')
+class PassThrough(Layer):
+    """Returns the outputs of a connected layer, without modifying it."""
+
+    def __init__(self, name:str='', **kwargs):
+        super().__init__(name=name, dtype=tf.float32, **kwargs)
+
+    def call(self, inputs, **kwargs):
+        return inputs
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({'name': self.name})
+        return config
