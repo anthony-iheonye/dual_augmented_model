@@ -456,9 +456,15 @@ class ImageMaskVisualDatasetBuilder:
         will extract and label object edges (e.g., pea outlines) in the final mask. If only
         'background' and 'pea' are provided, outlines will be omitted.
 
-        :param train_directory: (str) Path to the directory containing training images and masks.
-        :param validation_directory: (str) Path to the directory containing validation images and masks.
-        :param test_directory: (str) Path to the directory containing test images and masks.
+        :param train_directory: (str)  Path to the directory containing the training dataset.
+            It must include two subdirectories named 'images' and 'masks', containing the
+            input images and corresponding masks, respectively.
+        :param validation_directory: (str) Path to the directory containing the validation dataset.
+            It must include two subdirectories named 'images' and 'masks', containing the
+            input images and corresponding masks, respectively.
+        :param test_directory: (str) Path to the directory containing the test dataset.
+            It must include two subdirectories named 'images' and 'masks', containing the
+            input images and corresponding masks, respectively.
         :param final_image_shape: (Tuple[int, int]) Target shape to resize images and masks to.
         :param apply_weight_maps: (bool) Whether to generate weight maps for each mask.
         :param use_log_weights: (bool) Whether to compute class weights using log scaling.
@@ -487,7 +493,6 @@ class ImageMaskVisualDatasetBuilder:
         :param val_visual_attributes_json_path: (str) Path to JSON file containing validation set visual attributes.
         :param test_visual_attributes_json_path: (str) Path to JSON file containing test set visual attributes.
         :param visual_attributes_stats_save_dir: (str) Directory to save summary statistics (mean, std, etc.) for normalization.
-
         """
 
         # Generate unprocess training set
