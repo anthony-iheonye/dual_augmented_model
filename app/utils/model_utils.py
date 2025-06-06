@@ -62,46 +62,135 @@ class ModelUtilities:
               f"{'INDEX': <7s}{'LAYER_NAME':<{28 + extra_ticks}s}{'TRAINABLE LAYER'}")
 
         for idx, (name, layer) in enumerate(self.get_inner_layers().items()):
-            print(f"{str(idx ) +'.':<7}{name:<{28 + extra_ticks}s}{layer.trainable}")
+            print(f"{str(idx) + '.':<7}{name:<{28 + extra_ticks}s}{layer.trainable}")
 
-    def freeze_layers(self, layers: Union[str, list, tuple] = None):
+    @staticmethod
+    def is_batchnorm(layer: Layer,
+                     batchnorm_identifiers: tuple = ('_bn', 'batch_normalization')) -> bool:
         """
-        Freeze the weight of specific layers in the model. layers is optionally set to `None`
-        :param layers: [str, list, tuple], Names of layers to freeze. A list or tuple containing the names of
-            the layers whose weights are to be frozen. To freeze all the layers, set 'layers' to 'all'.
+        Determines whether the given layer is a batch normalization layer based on name patterns.
+
+        This is useful when you want to freeze or skip BatchNorm layers separately, which is a common
+        practice during fine-tuning due to their internal running statistics.
+
+        :param layer: A Keras Layer instance to evaluate.
+        :param batchnorm_identifiers: A tuple of substrings commonly found in BatchNorm layer names.
+                                       If any substring is found in the layer's name, the layer is treated as batchnorm.
+        :return: True if the layer appears to be a BatchNorm layer based on its name; False otherwise.
+        """
+        return any(identifier in layer.name for identifier in batchnorm_identifiers)
+
+    def freeze_layers(self,
+                      layers: Union[str, list, tuple] = None,
+                      positions: Union[str, int, list, tuple] = None,
+                      batchnorm_ids: Tuple[str] = ('_bn', 'batch_normalization')):
+        """
+        Freezes the weights of selected layers in the model.
+
+        This method supports three use cases:
+          - If `layers=None` and `positions=None`, all non-batchnorm layers will be unfrozen,
+            and all batchnorm layers will be frozen.
+          - If `layers='all'` or `positions='all'`, all layers will be frozen including batchnorm layers.
+          - If `layers` is a list/tuple of layer names, only those layers will be frozen.
+          - If `positions` is an int, list, or tuple of indices, the corresponding layers will be frozen.
+
+        In all cases, batch normalization layers will be frozen.
+
+        :param layers: A string ('all'), or list/tuple of layer names to freeze.
+        :param positions: An int (layer index), list/tuple of indices, or 'all' to freeze all layers by index.
+                          Cannot be used with `layers`.
+        :param batchnorm_ids: Substrings typically found in batch normalization layer names, for instance ('_bn',
+                            'batch_normalization'). Batchnorm layers are always frozen if detected.
+        :raises ValueError: If both `layers` and `positions` are provided or invalid types are passed.
         """
 
-        if layers is not None and not isinstance(layers, (str, list, tuple)):
-            raise ValueError \
-                (f"layers must be either be set to 'None' or a [str, list, tuple], got {type(layers).__name__}.")
+        if layers is not None and positions is not None:
+            raise ValueError('Use either `layers` or `positions`, not both.')
 
-        # Produce a Dict mapping layer name to layer object.
+        # Dict mapping layer name to layer object.
         model_layers = self.get_inner_layers()
 
-        if layers is None:
+        # Case1: Unfreeze all layers except batchnorms
+        if layers is None and positions is None:
             for layer in model_layers.values():
-                layer.trainable = True
+                layer.trainable = True if not self.is_batchnorm(layer, batchnorm_ids) else False
             return
 
-            # Freeze all the weights in the model, if layers = 'all'
-        if isinstance(layers, str):
-            if layers.lower() == 'all':
-                for layer in model_layers.values():
+        # Case 2: Freeze by layer name
+        if layers is not None:
+            error_message = ValueError(f"layers must either be set to 'None', 'all' a list, or "
+                                       f"a tuple, got `{layers}` of type {type(layers).__name__}.")
+
+            # Freeze all layers (if layers = 'all')
+            if isinstance(layers, str):
+                if layers.lower() == 'all':
+                    for layer in model_layers.values():
+                        layer.trainable = False
+                    return
+                raise error_message
+
+            # Unfreeze all layers
+            for layer in model_layers.values():
+                layer.trainable = True if not self.is_batchnorm(layer, batchnorm_ids) else False
+
+            if isinstance(layers, (list, tuple)):
+                for name in layers:
+                    if not isinstance(name, str):
+                        raise ValueError(f'Layer name must be a string - got {name}, of type {type(name).__name__}.')
+
+                # Freeze specified layers
+                for name in layers:
+                    layer = model_layers.get(name)
+                    if layer is None:   # Layer does not exist
+                        continue
+                    layer.trainable = False
+                return
+            else:
+                raise error_message
+
+
+        # Case 3: Freeze by layer index/position
+        if positions is not None:
+            error_message = ValueError(f"positions must either be set to 'None', 'all', "
+                                       f"an int, a list, or a tuple, got `{positions}` of "
+                                       f"type {type(positions).__name__}.")
+
+            all_layers = list(model_layers.values())
+
+            # Freeze all layers (if layers = 'all').
+            if isinstance(positions, str):
+                if positions.lower() == 'all':
+                    for layer in model_layers.values():
+                        layer.trainable = False
+                    return
+                raise error_message
+
+            # Unfreeze the weights of all layers
+            for layer in all_layers:
+                layer.trainable = True if not self.is_batchnorm(layer, batchnorm_ids) else False
+
+            if isinstance(positions, (list, tuple)):
+                for idx in positions:
+                    if not isinstance(idx, int):
+                        raise ValueError(f"Each position must be an int — got {type(idx).__name__}.")
+
+                    if idx < 0 or idx >= len(all_layers):
+                        raise IndexError(f"Layer index {idx} is out of range (model has {len(all_layers)} layers).")
+
+                # Freeze layers at specified positions
+                for position in positions:
+                    layer = all_layers[position]
                     layer.trainable = False
                 return
 
-                # Unfreeze the weights of all layers
-        for layer in model_layers.values():
-            layer.trainable = True
+            # Freeze a layer at a specific index
+            if isinstance(positions, int):
+                layer = all_layers[positions]
+                layer.trainable = False
+                return
+            raise error_message
 
-        # Freeze the weights of specified layers
-        for name in layers:
-            layer = model_layers.get(name)
-            if not layer:
-                continue
-            layer.trainable = False
 
-        return
 
     def set_weights_from_layers(self, layers: Union[List[Layer], Tuple[Layer]]) -> None:
         """
@@ -132,7 +221,7 @@ class L2Regularizer:
         Returns an L2 regularization layer, set to the assign regularization value.
         """
 
-    def __call__(self, factor: Optional[float]=None):
+    def __call__(self, factor: Optional[float] = None):
         """
 
         :param factor: The regularization value
@@ -149,7 +238,6 @@ class LayerExtractor:
     Returns the lower_level layers in a model. It the input is a
     layer, this class returns the sub-layers, if any.
     """
-
 
     def __call__(self, model: Union[Model, XLayer]):
         """
@@ -179,6 +267,7 @@ class LayerExtractor:
 
 class UNetTFModule(tf.Module):
     """Create a tf.Module version of a UNet tf.keras model. The UNet module would have a segment method."""
+
     def __init__(self, model, **kwargs):
         super().__init__(**kwargs)
         self.model = model
@@ -187,6 +276,3 @@ class UNetTFModule(tf.Module):
     def segment(self, image: tf.Tensor):
         """Returns an RGB image containing only the objects of interest or foreground"""
         return self.model.segment(image)
-
-
-
