@@ -101,7 +101,7 @@ morph-and-split-toolkit-key.json
 /checkpoint
 /model_weight.keras
 /my_weights.keras
-/practice.ipynb
+/unet_subclass_model.ipynb
 /unet_dataset_creator.ipynb
 /model_weights/
 /saved_models/
