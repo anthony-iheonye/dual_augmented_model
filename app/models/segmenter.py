@@ -1,13 +1,12 @@
+from typing import Optional, Tuple
+
 import tensorflow as tf
 from tensorflow.keras import Model
-from tensorflow.keras.utils import unpack_x_y_sample_weight
 from tensorflow.keras.saving import register_keras_serializable
+
+from app.layers.segmenter import Decoder, Encoder, BottleNeck, PostProcessMask
+from app.layers.segmenter import ForegroundExtractor, MergeLabelAxis
 from app.utils import ModelUtilities, UNetTFModule
-
-from app.layers import Decoder, Encoder, BottleNeck, PostProcessMask
-from app.layers import ForegroundExtractor, MergeLabelAxis
-
-from typing import Optional, Tuple
 
 
 @register_keras_serializable(package='Unet', name='Unet')
@@ -15,8 +14,7 @@ class UNet(Model, ModelUtilities):
     """UNet semantic segmentation model."""
     def __init__(self,
                  num_classes: int,
-                 input_shape: Optional[Tuple[int, int, int
-                 ]] = None,
+                 input_shape: Optional[Tuple[int, int, int]] = None,
                  dropout_rate: float = 0.0,
                  l2_reg_factor: float = None,
                  post_process: bool = False,
