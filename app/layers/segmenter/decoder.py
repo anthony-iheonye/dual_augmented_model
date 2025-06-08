@@ -1,7 +1,7 @@
 from tensorflow.keras.layers import Layer
 from tensorflow.keras.saving import register_keras_serializable
 
-from app.layers.conv_blocks import DecoderBlock
+from app.layers.segmenter.conv_blocks import DecoderBlock
 from app.utils.model_utils import L2Regularizer
 from typing import Union
 from tensorflow.keras.layers import Conv2D
