@@ -1403,3 +1403,234 @@ class RandomShear(AugmentationLayer):
                        "interpolation": self.interpolation})
         return config
 
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomZoom')
+class RandomZoom(AugmentationLayer):
+    """
+    A preprocessing layer which randomly zooms images and their segmentation masks during training.
+
+    This layer zooms in or out along the height and/or width axes by a random factor. You can
+    specify zoom bounds as a single value (symmetric zoom in both directions) or as a range.
+    If `width_factor` is not provided, the zoom preserves the aspect ratio and applies the same
+    transformation to both axes. This layer only applies transformations during training when
+    `active=True`. At inference time or when inactive, the layer behaves as a no-op and returns
+    all inputs (images, targets, bounding boxes) unchanged.
+
+    Input shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 1D, 2D, 3D, or 4D tensor}
+
+        `images` must follow shape `(..., height, width, channels)` using `"channels_last"` format.
+        `targets` can be 1D–4D. If 2D or lower, the target will not be augmented.
+
+    Output shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 1D, 2D, 3D, or 4D tensor}
+
+        Output shape and format are identical to input.
+
+    Arguments:
+      height_factor: A float, int, list, or tuple specifying the zoom range along the height axis.
+         Values are interpreted as percentages. For example:
+         - `(90, 110)` samples a zoom between +10% in and −10% out.
+         - A scalar `x` will be treated as `(-x, x)` symmetrically.
+      width_factor: Optional float, int, list, or tuple specifying zoom range along the width axis.
+         Same format as `height_factor`. If `None`, the same factor is applied to both height and width.
+      fill_mode: Strategy used to fill pixels outside the transformed image boundaries.
+         One of: `{"constant", "reflect", "wrap", "nearest"}`.
+         - *reflect*: `(d c b a | a b c d | d c b a)` — reflects about the edge of the last pixel.
+         - *constant*: `(k k k k | a b c d | k k k k)` — fills with constant value `k` (default 0).
+         - *wrap*: `(a b c d | a b c d | a b c d)` — wraps around to the opposite edge.
+         - *nearest*: `(a a a a | a b c d | d d d d)` — extends using nearest edge pixel.
+      interpolation: Interpolation method used for resampling. One of: `"nearest"`, `"bilinear"`.
+      fill_value: Float value to use when `fill_mode="constant"` to fill empty space.
+      image_key: Key used to retrieve the image tensor from the input dictionary.
+      target_key: Key used to retrieve the mask or label tensor from the input dictionary.
+      bounding_box_key: Key used to retrieve bounding box data from the input dictionary.
+      name: Name assigned to the layer instance.
+      kwargs: Additional keyword arguments passed to the base `AugmentationLayer`.
+
+    Raises:
+      TypeError: If `height_factor` or `width_factor` is not a float, int, list, or tuple.
+      ValueError: If zoom bounds contain invalid values (e.g., below 0 or upper < lower).
+    """
+
+    def __init__(self,
+                 height_factor: Union[int, list, tuple] = (90, 110),
+                 width_factor: Union[int, list, tuple] = None,
+                 fill_mode="reflect",
+                 interpolation="bilinear",
+                 fill_value=0.0,
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 batches_before_aug: Optional[int] = None,
+                 name: str = 'random_zoom',
+                 **kwargs):
+
+        super().__init__(custom_interp_datapoints=[-200.0, -100.0, 0.0, 100.0, 200.0],
+                         tensorflow_interp_datapoints=[-1.0, -0.5, 0.0, 0.5, 1.0],
+                         image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key,
+                         batches_before_aug=batches_before_aug,
+                         name=name,
+                         **kwargs)
+
+        check_input(inputs=height_factor, name='height_factor', input_range=(1, 200))
+
+        # convert custom value to Tensorflow value
+        self.height_factor = interpolate_to_tensorflow_value(custom_value=height_factor,
+                                                             custom_datapoints=self.custom_interp_datapoints,
+                                                             tensorflow_datapoints=self.tensorflow_interp_datapoints)
+
+        if isinstance(height_factor, (tuple, list)):
+            self.height_lower = self.height_factor[0]
+            self.height_upper = self.height_factor[1]
+        else:
+            self.height_lower = -self.height_factor
+            self.height_upper = self.height_factor
+
+        if width_factor is not None:
+            check_input(inputs=width_factor, name='width_factor',
+                        input_range=(0, 200))
+            if isinstance(width_factor, (tuple, list)):
+                self.width_lower = width_factor[0]
+                self.width_upper = width_factor[1]
+            else:
+                self.width_lower = -width_factor
+                self.width_upper = width_factor
+
+            self.width_factor = interpolate_to_tensorflow_value(custom_value=width_factor,
+                                                                custom_datapoints=self.custom_interp_datapoints,
+                                                                tensorflow_datapoints=self.tensorflow_interp_datapoints)
+        else:
+            self.width_factor = None
+
+        check_fill_mode_and_interpolation(fill_mode, interpolation)
+
+        self.fill_mode = fill_mode
+        self.fill_value = fill_value
+        self.interpolation = interpolation
+
+    def get_random_transformation(self, image=None, label=None, bounding_box=None):
+        batch_size = tf.shape(image)[0]
+
+        height_zoom = tf.random.uniform(
+            shape=[batch_size, 1],
+            minval=1.0 - self.height_lower,
+            maxval=1.0 - self.height_upper,
+        )
+
+        if self.width_factor is not None:
+            width_zoom = tf.random.uniform(
+                shape=[batch_size, 1],
+                minval=1.0 - self.width_lower / 100,
+                maxval=1.0 - self.width_upper / 100,
+            )
+        else:
+            width_zoom = height_zoom
+
+        return {"height_zoom": height_zoom, "width_zoom": width_zoom}
+
+    def augment_image(self, image, transformation):
+        image = utils.ensure_tensor(image, self.compute_dtype)
+        image_shape = tf.shape(image)
+
+        img_hd = tf.cast(image_shape[H_AXIS], tf.float32)
+        img_wd = tf.cast(image_shape[W_AXIS], tf.float32)
+
+        width_zoom = transformation["width_zoom"]
+        height_zoom = transformation["height_zoom"]
+        zooms = tf.cast(tf.concat([width_zoom, height_zoom], axis=1), dtype=tf.float32)
+
+        output = transform(image,
+                           get_zoom_matrix(zooms, img_hd, img_wd),
+                           fill_mode=self.fill_mode,
+                           fill_value=self.fill_value,
+                           interpolation=self.interpolation
+                           )
+
+        return output
+
+    def augment_label(self, label, transformation):
+        label = utils.ensure_tensor(label, self.compute_dtype)
+        label_shape = tf.shape(label)
+
+        img_hd = tf.cast(label_shape[H_AXIS], tf.float32)
+        img_wd = tf.cast(label_shape[W_AXIS], tf.float32)
+
+        width_zoom = transformation["width_zoom"]
+        height_zoom = transformation["height_zoom"]
+
+        zooms = tf.cast(tf.concat([width_zoom, height_zoom], axis=1), dtype=tf.float32)
+        output = transform(label,
+                           get_zoom_matrix(zooms, img_hd, img_wd),
+                           fill_mode=self.fill_mode,
+                           fill_value=self.fill_value,
+                           interpolation='nearest',
+                           )
+        return output
+
+    def augment_bounding_boxes(self, image, bounding_boxes, transformation=None):
+        """
+        Adjusts bounding boxes to match the zoomed image.
+
+        :param image: 4D tensor (B, H, W, C)
+        :param bounding_boxes: 3D tensor (B, N, 4) where each box is [x_min, y_min, x_max, y_max]
+        :param transformation: Dict containing 'height_zoom' and 'width_zoom' (shape: [B, 1])
+        :return: Adjusted bounding boxes of shape (B, N, 4)
+        """
+        image_shape = tf.shape(image)
+        height = tf.cast(image_shape[1], tf.float32)
+        width = tf.cast(image_shape[2], tf.float32)
+
+        # Get zoom factors
+        zoom_h = tf.reshape(transformation["height_zoom"], [-1, 1, 1])  # (B, 1, 1)
+        zoom_w = tf.reshape(transformation["width_zoom"], [-1, 1, 1])  # (B, 1, 1)
+
+        # Compute center of image (B, 1)
+        center_x = width / 2.0
+        center_y = height / 2.0
+
+        # Expand to (B, 1, 1)
+        center_x = tf.reshape(center_x, [1, 1, 1])
+        center_y = tf.reshape(center_y, [1, 1, 1])
+
+        # Center box coordinates
+        x_min, y_min, x_max, y_max = tf.split(bounding_boxes, 4, axis=-1)
+        x_centered = tf.stack([x_min - center_x, x_max - center_x], axis=-1)  # (B, N, 2, 1)
+        y_centered = tf.stack([y_min - center_y, y_max - center_y], axis=-1)
+
+        # Apply zoom
+        x_scaled = x_centered / zoom_w
+        y_scaled = y_centered / zoom_h
+
+        # Re-center
+        new_x_min = x_scaled[:, :, 0] + center_x
+        new_x_max = x_scaled[:, :, 1] + center_x
+        new_y_min = y_scaled[:, :, 0] + center_y
+        new_y_max = y_scaled[:, :, 1] + center_y
+
+        # Clip to image bounds
+        new_x_min = tf.clip_by_value(new_x_min, 0.0, width)
+        new_x_max = tf.clip_by_value(new_x_max, 0.0, width)
+        new_y_min = tf.clip_by_value(new_y_min, 0.0, height)
+        new_y_max = tf.clip_by_value(new_y_max, 0.0, height)
+
+        return tf.concat([new_x_min, new_y_min, new_x_max, new_y_max], axis=-1)
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "height_factor": self.height_factor,
+                "width_factor": self.width_factor,
+                "fill_mode": self.fill_mode,
+                "fill_value": self.fill_value,
+                "interpolation": self.interpolation,
+            })
+        return config
