@@ -1,1 +1,1 @@
-from .processing_utils import (NormalizeImage, SplitImageTarget, PassThroughLayer,)
+from .processing_utils import (NormalizeImage, SplitImageTarget, PassThroughLayer, )
