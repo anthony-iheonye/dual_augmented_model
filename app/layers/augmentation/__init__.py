@@ -1,1 +1,2 @@
-from .processing_utils import (NormalizeImage, SplitImageTarget, PassThroughLayer, )
+from .image_target_processing import RandomAugmentationLayer
+from .processing_utils import (NormalizeImage, SplitImageTarget, PassThroughLayer)

@@ -2871,3 +2871,296 @@ class CenterCrop(AugmentationLayer):
         }
         base_config = super().get_config()
         return dict(list(base_config.items()) + list(config.items()))
+
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomAugmentationLayer')
+class RandomAugmentationLayer(Layer):
+    """
+    A comprehensive GPU-friendly preprocessing layer that applies multiple random augmentations
+    to images and their corresponding targets (e.g., segmentation masks). This is designed for
+    tasks like semantic segmentation where identical spatial transformations must be applied
+    to both image and label.
+
+    Notes:
+
+    The `targets` must be either 3D or 4D tensors (i.e., shape `[H, W, C]` or `[B, H, W, C]`)
+    to undergo spatial augmentations. If `targets` are scalar (e.g., shape `[B]`), they will
+    be passed through unchanged.
+
+    Supported Transformations:
+        - Horizontal Flip
+        - Vertical Flip
+        - Rotation
+        - Shear
+        - Zoom
+        - Gaussian Noise
+        - Brightness Adjustment
+        - Contrast Adjustment
+
+    Each augmentation can be selectively enabled via constructor arguments.
+
+    Example Usage:
+            >>> augmenter = RandomAugmentationLayer(
+            >>>     flip=True,
+            >>>     rotate=True,
+            >>>     theta=30,
+            >>>     shear=True,
+            >>>     shear_angle=(0, 5),
+            >>>     zoom=True,
+            >>>     zoom_factor=(90, 110),
+            >>>     use_gaussian_noise=True,
+            >>>     gaussian_range=(0.0, 0.02),
+            >>>     adjust_brightness=True,
+            >>>     brightness_range=(0.9, 1.1),
+            >>>     adjust_contrast=True,
+            >>>     contrast_range=(0.9, 1.1),
+            >>>     apply_jitter=True,
+            >>>     jitter_intensity=(1, 5),
+            >>>     image_intensity_range=(0.0, 255.0)
+            >>> )
+
+            >>> output = augmenter({'images': image_batch, 'targets': mask_batch}, training=True)
+
+    :param image_key: Key in the input dictionary corresponding to the image tensor. Default `'images'`.
+    :param target_key: Key for the target/mask tensor. Default `'targets'`.
+    :param bounding_box_key: Key for the optional bounding box tensor. Default `'bounding_boxes'`.
+
+    :param flip: If `True`, applies random horizontal flips with 50% probability.
+
+    :param flip_mode: (str): Flip direction. Options:
+            - 'HORIZONTAL': left-right flip
+            - 'VERTICAL': up-down flip
+            - 'HORIZONTAL_AND_VERTICAL': both directions randomly
+
+    :param rotate: Enables random image rotation.
+    :param theta: Rotation angle in degrees. Can be:
+                  - A single number → rotation in `[-theta, +theta]`
+                  - A tuple/list → rotation in `[min_angle, max_angle]`
+                  Recommended: 0–180°
+
+    :param shear: Enables shear transformation.
+    :param shear_angle: Shear angle range in degrees. Tuple/list preferred. E.g., `(0, 10)`.
+
+    :param zoom: Enables random zoom.
+    :param zoom_factor: Tuple/list of ints indicating zoom percentage range.
+                        E.g., `(90, 110)` zooms between -10% to +10%. Values must be > 0.
+
+    :param use_gaussian_noise: If `True`, adds Gaussian noise to image only.
+    :param gaussian_range: Tuple of floats defining standard deviation of noise.
+                           E.g., `(0.0, 0.02)` where 0.02 = 2% noise. Must be ≥ 0.
+
+    :param adjust_brightness: Enables brightness changes.
+    :param brightness_range: Tuple of floats. 1.0 means no change.
+                             E.g., `(0.9, 1.1)` varies brightness ±10%.
+
+    :param adjust_contrast: Enables contrast adjustment.
+    :param contrast_range: Tuple of floats. E.g., `(0.9, 1.1)` adjusts contrast ±10%.
+
+    :param apply_jitter: Enables pixel-level random jitter.
+    :param jitter_intensity: Tuple of ints, typically `(1, 5)`, controlling pixel-level variation
+                             by randomly adding or subtracting up to `jitter_intensity` per channel.
+
+    :param center_crop: If `True`, crops the center of the final image.
+    :param output_height: Output height in pixels. Required if `center_crop=True`.
+    :param output_width: Output width in pixels. Required if `center_crop=True`.
+
+    :param fill_mode: Padding method for affine transforms. One of:
+                      - `"constant"`: Fill with `fill_value`
+                      - `"reflect"`: Mirror edges
+                      - `"wrap"`: Wrap around
+                      - `"nearest"`: Use nearest pixel
+
+    :param interpolation: Image resampling method: `"nearest"` or `"bilinear"`. Segmentation targets always use `"nearest"`.
+
+    :param fill_value: Float used if `fill_mode="constant"`. Default: `0.0`.
+
+    :param image_intensity_range: Min/max pixel values of input. Common values:
+                                  - `(0.0, 1.0)` for normalized
+                                  - `(0.0, 255.0)` for raw inputs
+
+    :param name: Name of the layer instance.
+    :param kwargs: Additional layer keyword arguments.
+    """
+
+    def __init__(self,
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = 'bounding_boxes',
+                 batches_before_aug: Optional[int] = None,
+                 flip: bool = False,
+                 flip_mode: str = 'HORIZONTAL_AND_VERTICAL',
+                 rotate: bool = False,
+                 theta: Union[int, List[int], Tuple[int, int], None] = 180,
+                 shear: bool = False,
+                 shear_angle: Union[list, tuple, float, None] = (0, 20),
+                 zoom: bool = False,
+                 zoom_factor: Union[int, list, tuple, None] = (80, 110),
+                 use_gaussian_noise: bool = False,
+                 gaussian_range: Union[float, List[float], Tuple[float, float]] = (0.0, 0.01),
+                 adjust_brightness: bool = False,
+                 brightness_range: Union[float, list, tuple] = (0.90, 1.10),
+                 jitter: bool = False,
+                 jitter_range: Union[List[int], Tuple[int, int]] = (0, 60),
+                 center_crop: bool = False,
+                 output_height: Union[int, None] = None,
+                 output_width: Union[int, None] = None,
+                 fill_mode: str = "reflect",
+                 interpolation: str = "bilinear",
+                 image_intensity_range: Tuple[float, float] = (0.0, 255.0),
+                 fill_value: float = 0.0,
+                 name='multi_dual_augmentation_layer',
+                 **kwargs):
+
+        super().__init__(name=name, trainable=False, **kwargs)
+        self.image_key = image_key
+        self.target_key = target_key
+        self.bounding_box_key = bounding_box_key
+        self.batches_before_aug = batches_before_aug
+
+        self.value_range = image_intensity_range
+        self.flip = flip
+        self.flip_mode = flip_mode
+        self.rotate = rotate
+        self.theta = theta
+        self.shear = shear
+        self.shear_angle = shear_angle
+        self.zoom = zoom
+        self.zoom_factor = zoom_factor
+        self.use_gaussian_noise = use_gaussian_noise
+        self.gaussian_range = gaussian_range
+        self.adjust_brightness = adjust_brightness
+        self.brightness_range = brightness_range
+        self.apply_jitter = jitter
+        self.jitter_range = jitter_range
+        self.fill_mode = fill_mode
+        self.interpolation = interpolation
+        self.fill_value = fill_value
+        self.center_crop = center_crop
+        self.output_width = output_width
+        self.output_height = output_height
+
+        if center_crop:
+            if all(isinstance(value, int) for value in [output_height, output_width]):
+                self.output_width = output_width
+                self.output_height = output_height
+            else:
+                raise TypeError(
+                    "The `output_height` and `output_width` parameters "
+                    "must be of type int. Got height="
+                    "{} and width={} of type {} and {}".format(output_height,
+                                                               output_width,
+                                                               type(output_height),
+                                                               type(output_width)))
+
+        self.flip_layer = RandomFlip(mode=self.flip_mode,
+                                     active=self.flip,
+                                     image_key=self.image_key,
+                                     target_key=self.target_key,
+                                     bounding_box_key=self.bounding_box_key,
+                                     batches_before_aug=self.batches_before_aug,
+                                     name='horizontal_flip')
+
+        self.affine_layer = AffineTransform(rotate=self.rotate,
+                                            theta=theta,
+                                            shear=self.shear,
+                                            shear_angle=shear_angle,
+                                            zoom=self.zoom,
+                                            zoom_factor=zoom_factor,
+                                            interpolation=interpolation,
+                                            fill_mode=fill_mode,
+                                            fill_value=fill_value,
+                                            image_key=self.image_key,
+                                            target_key=self.target_key,
+                                            bounding_box_key=self.bounding_box_key,
+                                            batches_before_aug=self.batches_before_aug,
+                                            name='affine_transform')
+
+        self.noise_layer = RandomGaussianNoise(stddev=gaussian_range,
+                                               active=self.use_gaussian_noise,
+                                               image_key=self.image_key,
+                                               target_key=self.target_key,
+                                               bounding_box_key=self.bounding_box_key,
+                                               batches_before_aug=self.batches_before_aug,
+                                               name='gaussian_noise')
+
+        self.brightness_layer = RandomBrightness(factor=brightness_range,
+                                                 image_intensity_range=image_intensity_range,
+                                                 active=self.adjust_brightness,
+                                                 image_key=self.image_key,
+                                                 target_key=self.target_key,
+                                                 bounding_box_key=self.bounding_box_key,
+                                                 batches_before_aug=self.batches_before_aug,
+                                                 name='brightness')
+
+        self.jitter_layer = RandomJitter(active=self.apply_jitter,
+                                         jitter_range=self.jitter_range,
+                                         image_key=self.image_key,
+                                         target_key=self.target_key,
+                                         bounding_box_key=self.bounding_box_key,
+                                         batches_before_aug=self.batches_before_aug,
+                                         name='jitter')
+
+        # keep track of all layers that were activated.
+        self.register = []
+
+        if flip:
+            self.register.append(self.flip_layer)
+        if any([shear, zoom, rotate]):
+            self.register.append(self.affine_layer)
+        if use_gaussian_noise:
+            self.register.append(self.noise_layer)
+        if adjust_brightness:
+            self.register.append(self.brightness_layer)
+        if jitter:
+            self.register.append(self.jitter_layer)
+
+    def call(self, inputs, training=None):
+        """
+        :param augment:
+        :param training:
+        :param inputs: a tuple containing the images and targets
+        :return: a dictionary of {'images': inputs[0], 'targets': inputs[1]}
+        """
+        x = self.flip_layer(inputs, training=training)
+        x = self.affine_layer(x, training=training)
+        x = self.noise_layer(x, training=training)
+        x = self.jitter_layer(x, training=training)
+        x = self.brightness_layer(x, training=training)
+        return x
+
+    def reset_counter(self):
+        self.flip_layer.reset_counter()
+        self.affine_layer.reset_counter()
+        self.noise_layer.reset_counter()
+        self.jitter_layer.reset_counter()
+        self.brightness_layer.reset_counter()
+
+    def get_config(self):
+        base_config = super().get_config()
+        config = {"image_key": self.image_key,
+                  "target_key": self.target_key,
+                  "bounding_box_key": self.bounding_box_key,
+                  "batches_before_augmentation": self.batches_before_aug,
+                  "flip": self.flip,
+                  "flip_mode": self.flip_mode,
+                  "rotate": self.rotate,
+                  "theta": self.theta,
+                  "shear": self.shear,
+                  "shear_angle": self.shear_angle,
+                  "zoom": self.zoom,
+                  "zoom_factor": self.zoom_factor,
+                  "use_gaussian_noise": self.use_gaussian_noise,
+                  "gaussian_range": self.gaussian_range,
+                  "adjust_brightness": self.adjust_brightness,
+                  "brightness_range": self.brightness_range,
+                  "jitter": self.apply_jitter,
+                  "jitter_range": self.jitter_range,
+                  "center_crop": self.center_crop,
+                  "output_height": self.output_height,
+                  "output_width": self.output_width,
+                  "fill_mode": self.fill_mode,
+                  "interpolation": self.interpolation,
+                  'image_intensity_range': self.value_range,
+                  "fill_value": self.fill_value}
+        base_config.update(config)
+        return base_config
