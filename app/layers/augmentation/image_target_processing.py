@@ -2656,3 +2656,218 @@ class RandomCrop(AugmentationLayer):
         config = super().get_config()
         config.update({'zoom_factor': self.zoom_factor})
         return config
+
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='CenterCrop')
+class CenterCrop(AugmentationLayer):
+    """
+    A preprocessing layer that crops the central region of input images and their
+    corresponding targets (e.g., segmentation masks) to a specified size.
+
+    During training, this layer crops the center of the input tensors to a fixed
+    `(height, width)` shape. If the input is smaller than the target size, it will
+    be resized first to preserve the aspect ratio before cropping. This ensures a
+    consistent output shape across varying input sizes.
+
+    Inputs:
+        A dictionary with any of the following keys:
+        - `'images'`: A 3D (H, W, C) or 4D (B, H, W, C) float/integer tensor. Pixel values can be in any range (e.g., `[0., 1.]`, `[0, 255]`).
+        - `'targets'`: A 3D or 4D tensor. If the target is not at least 3D, it is passed through unchanged.
+        - `'bounding_boxes'` (optional): A 2D or 3D tensor specifying bounding boxes.
+
+    Outputs:
+        A dictionary with the same keys:
+        - `'images'` and `'targets'` are center-cropped or resized to `(height, width)`.
+        - `'bounding_boxes'` are optionally adjusted if present.
+        - Non-augmentable targets (e.g., 1D labels) are returned unchanged.
+
+    Example:
+        >>> center_crop = CenterCrop(height=256, width=256, active=True)
+
+        >>> inputs = {
+        >>>     "images": tf.random.uniform(shape=(512, 512, 3)),
+        >>>     "targets": tf.random.uniform(shape=(512, 512, 1), maxval=2, dtype=tf.int32),
+        >>> }
+
+        >>> outputs = center_crop(inputs, training=True)
+
+        >>> print(outputs["images"].shape)   # (256, 256, 3)
+        >>> print(outputs["targets"].shape)  # (256, 256, 1)
+
+
+    Notes:
+        - The layer supports both batched and unbatched inputs.
+        - If the input and target height/width differ in parity (even vs. odd), symmetric padding may occur.
+        - Non-3D/4D targets (e.g., class indices) are passed through without cropping.
+        - Uses `tf.image.crop_to_bounding_box` and `smart_resize` to ensure robust handling of varied input sizes.
+
+    :param height: `int`. Target height after cropping. Must be a positive integer.
+    :param width: `int`. Target width after cropping. Must be a positive integer.
+    :param active: `bool`. Whether to apply center cropping during training. Defaults to `False`.
+    :param name: `str`. Name of the layer. Defaults to `'center_crop'`.
+    :param image_key: `str`. Dictionary key for accessing the image tensor. Defaults to `'images'`.
+    :param target_key: `str`. Dictionary key for accessing the target tensor. Defaults to `'targets'`.
+    :param bounding_box_key: `str`. Dictionary key for accessing bounding boxes. Defaults to `'bounding_boxes'`.
+    """
+
+    def __init__(self,
+                 height: int = None,
+                 width: int = None,
+                 active: bool = True,
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 batches_before_aug: Optional[int] = None,
+                 name: str = 'center_crop',
+                 **kwargs):
+
+        super().__init__(name=name,
+                         active=active,
+                         image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key,
+                         batches_before_aug=batches_before_aug,
+                         **kwargs)
+
+        if height is None or width is None:
+            self.active.assign(False)
+
+        self.check_parameter_type(params_and_types={
+            'height': (height, int, True),
+            'width': (width, int, True),
+            'active': (active, bool, False),
+            'name': (name, str, False),
+            'image_key': (image_key, str, False),
+            'target_key': (target_key, str, False),
+            'bounding_box_key': (bounding_box_key, str, False),
+        })
+
+        if all(value is not None for value in [height, width]):
+            if all(isinstance(value, int) for value in [height, width]):
+                self.width = width
+                self.height = height
+            else:
+                raise TypeError(
+                    "The `height` and `width` parameter for the center crop layer "
+                    "must be of type int. Got height="
+                    "{} and width={} of type {} and {}".format(height, width, type(height), type(width))
+                )
+
+    def _augment(self, inputs):
+        """Augments the image, target and bounding box."""
+        image = inputs.get(self.image_key, None)
+        target = inputs.get(self.target_key, None)
+        bounding_box = inputs.get(self.bounding_box_key, None)
+
+        original_image_shape = image.shape
+        # The transform op only accepts rank 4 inputs,
+        # so if we have an unbatched image,
+        # we need to temporarily expand dims to a batch.
+        image, image_was_unbatched = self.ensure_batched(image)
+
+        transformation = self.get_random_transformation(image=image, label=target,
+                                                        bounding_box=bounding_box)
+
+        image = self.augment_image(image, transformation=transformation)
+
+        if image_was_unbatched:
+            image = tf.squeeze(image, 0)
+            image.set_shape((self.height, self.width, original_image_shape[-1]))
+
+        result = {self.image_key: image}
+
+        # apply target augmentation only if target exist, and it is at least 3-dimensional
+        if target is not None:
+            original_target_shape = target.shape
+            target, target_was_unbatched = self.ensure_batched(target)
+
+            if self.is_batched(target):
+                target = self.augment_target(target, transformation=transformation)
+                if target_was_unbatched:
+                    target = tf.squeeze(input=target, axis=0)
+                    target.set_shape((self.height, self.width, original_target_shape[-1]))
+
+                target = tf.round(target)
+                result[self.target_key] = tf.cast(target, dtype=self.target_compute_dtype)
+            elif target.shape.rank > 2 and target.shape[-1] > 1:
+                raise ValueError(f"The shape of the target(s) must be in the form "
+                                 f"[Height, Width, 1], got {target.shape}.")
+            else:
+                # incase the target is not a 3-dimensional tensor(e.g. a categorical target)
+                result[self.target_key] = target
+
+        if bounding_box is not None:
+            bounding_box = self.augment_bounding_boxes(image, bounding_box,
+                                                       transformation=transformation)
+            result[self.bounding_box_key] = bounding_box
+
+        return result
+
+    def augment_image(self, image, transformation):
+        image = utils.ensure_tensor(image, self.compute_dtype)
+        input_shape = tf.shape(image)
+        h_diff = input_shape[H_AXIS] - self.height
+        w_diff = input_shape[W_AXIS] - self.width
+
+        def center_crop():
+            h_start = tf.cast(h_diff / 2, tf.int32)
+            w_start = tf.cast(w_diff / 2, tf.int32)
+            cropped = tf.image.crop_to_bounding_box(
+                image, h_start, w_start, self.height, self.width
+            )
+            return tf.cast(cropped, self.compute_dtype)
+
+        def upsize():
+            resized = image_utils.smart_resize(
+                image, [self.height, self.width]
+            )
+            # smart_resize will always output float32, so we need to re-cast.
+            return tf.cast(resized, self.compute_dtype)
+
+        return tf.cond(
+            tf.reduce_all((h_diff >= 0, w_diff >= 0)), center_crop, upsize
+        )
+
+    def augment_label(self, label, transformation):
+        label = utils.ensure_tensor(label, self.compute_dtype)
+        label = tf.cast(label, dtype=tf.float32)
+
+        input_shape = tf.shape(label)
+        h_diff = input_shape[H_AXIS] - self.height
+        w_diff = input_shape[W_AXIS] - self.width
+
+        def center_crop():
+            h_start = tf.cast(h_diff / 2, tf.int32)
+            w_start = tf.cast(w_diff / 2, tf.int32)
+            cropped = tf.image.crop_to_bounding_box(
+                label, h_start, w_start, self.height, self.width
+            )
+            return cropped
+
+        def upsize():
+            resized = image_utils.smart_resize(
+                x=label,
+                size=[self.height, self.width],
+                interpolation='nearest'
+            )
+            return resized
+
+        return tf.cond(
+            pred=tf.reduce_all((h_diff >= 0, w_diff >= 0)),
+            true_fn=center_crop,
+            false_fn=upsize
+        )
+
+    def compute_output_shape(self, input_shape):
+        input_shape = tf.TensorShape(input_shape).as_list()
+        input_shape[H_AXIS] = self.height
+        input_shape[W_AXIS] = self.width
+        return tf.TensorShape(input_shape)
+
+    def get_config(self):
+        config = {
+            "height": self.height,
+            "width": self.width,
+        }
+        base_config = super().get_config()
+        return dict(list(base_config.items()) + list(config.items()))
