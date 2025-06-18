@@ -1074,47 +1074,27 @@ class RandomGaussianNoise(AugmentationLayer):
         return config
 
 
-@keras.saving.register_keras_serializable(package='Augmentation', name='RandomFlipV2')
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomFlip')
 class RandomFlip(AugmentationLayer):
     """
-    A preprocessing layer which randomly flips images during training.
+    A preprocessing layer which randomly flips images and segmentation masks during training.
 
-    This layer flips the input image and segmentation mask either horizontally,
-    vertically, or both, depending on the `mode` specified. Flipping is applied
-    only during training when `active=True`. During inference or when inactive,
-    the layer behaves as a no-op and returns all inputs unmodified.
+    This layer applies horizontal, vertical, or both flips per batch sample based on a random condition.
+    The flipping is only performed during training. During inference, or if inactive, the layer does nothing.
 
-    Input shape:
-        {'images': 3D (unbatched) or 4D (batched) tensor,
-         'targets': 1D, 2D, 3D, or 4D tensor}
+    Inputs:
+        {
+            'images': 3D or 4D tensor (HWC or BHWC),
+            'targets': 1D–4D tensor (segmentation mask or label),
+            'bounding_boxes': (optional) 2D or 3D bounding box tensor
+        }
 
-        `images` must follow shape `(..., height, width, channels)` using `"channels_last"` format.
-        `targets` can be 1D–4D and are passed through unchanged if 1D or 2D. Augmentation is only applied
-        to `targets` if they are 3D or 4D.
-
-    Output shape:
-        {'images': 3D (unbatched) or 4D (batched) tensor,
-         'targets': 1D, 2D, 3D, or 4D tensor}
-
-        Output shape and format are identical to input.
-
-    Arguments:
-      mode: A string indicating the flip direction. One of:
-         `"horizontal"` (left-right), `"vertical"` (top-bottom), or `"horizontal_and_vertical"`.
-         Defaults to `"horizontal_and_vertical"`.
-      active: If True, enables flipping during training. If False, inputs are passed through unchanged.
-      image_key: Key used to retrieve the image tensor from the input dictionary.
-      target_key: Key used to retrieve the mask or label tensor from the input dictionary.
-      bounding_box_key: Key used to retrieve bounding box data from the input dictionary.
-      name: Name assigned to the layer instance.
-      kwargs: Additional keyword arguments passed to the base `AugmentationLayer`.
-
-    Raises:
-      ValueError: If `mode` is not one of the supported values: `"horizontal"`, `"vertical"`, `"horizontal_and_vertical"`.
+    Outputs:
+        A dictionary with the same keys, where 'images' and 'targets' are flipped conditionally.
     """
 
     def __init__(self,
-                 mode=HORIZONTAL_AND_VERTICAL,
+                 mode='horizontal_and_vertical',
                  active: bool = True,
                  image_key: str = 'images',
                  target_key: str = 'targets',
@@ -1122,7 +1102,6 @@ class RandomFlip(AugmentationLayer):
                  batches_before_aug: Optional[int] = None,
                  name='random_flip',
                  **kwargs):
-
         super().__init__(name=name,
                          active=active,
                          image_key=image_key,
@@ -1131,42 +1110,29 @@ class RandomFlip(AugmentationLayer):
                          batches_before_aug=batches_before_aug,
                          **kwargs)
 
-        self.mode = mode
-        if mode.lower() == HORIZONTAL:
+        mode = mode.lower()
+        if mode == 'horizontal':
             self.horizontal = True
             self.vertical = False
-        elif mode.lower() == VERTICAL:
+        elif mode == 'vertical':
             self.horizontal = False
             self.vertical = True
-        elif mode.lower() == HORIZONTAL_AND_VERTICAL:
+        elif mode == 'horizontal_and_vertical':
             self.horizontal = True
             self.vertical = True
         else:
             raise ValueError(
-                "RandomDualFlip layer {name} received an unknown mode "
-                "argument {arg}. mode can either be 'vertical', 'horizontal', or 'horizontal_and_vertical'".format(
-                    name=self.name, arg=mode)
+                f"Invalid flip mode '{mode}' in layer '{name}'. Must be 'horizontal', 'vertical', or 'horizontal_and_vertical'."
             )
+
+        self.mode = mode
         self.auto_vectorize = True
 
     def get_random_transformation(self, image=None, label=None, bounding_box=None):
         batch_size = tf.shape(image)[0]
 
-        flip_horizontal = tf.cond(
-            pred=tf.constant(self.horizontal),
-            true_fn=lambda: tf.less(
-                tf.random.uniform([batch_size], 0.0, 1.0, dtype=tf.float32), tf.constant(0.5)
-            ),
-            false_fn=lambda: tf.zeros(shape=[batch_size], dtype=tf.bool)
-        )
-
-        flip_vertical = tf.cond(
-            pred=tf.constant(self.vertical),
-            true_fn=lambda: tf.less(
-                tf.random.uniform([batch_size], 0.0, 1.0, dtype=tf.float32), tf.constant(0.5)
-            ),
-            false_fn=lambda: tf.zeros(shape=[batch_size], dtype=tf.bool)
-        )
+        flip_horizontal = tf.random.uniform([batch_size], 0.0, 1.0) < 0.5 if self.horizontal else tf.zeros([batch_size], dtype=tf.bool)
+        flip_vertical = tf.random.uniform([batch_size], 0.0, 1.0) < 0.5 if self.vertical else tf.zeros([batch_size], dtype=tf.bool)
 
         return {
             "flip_horizontal": flip_horizontal,
@@ -1174,85 +1140,54 @@ class RandomFlip(AugmentationLayer):
         }
 
     def augment_image(self, image, transformation):
-        flip_horizontal = transformation['flip_horizontal']
-        flip_vertical = transformation['flip_vertical']
+        flip_h = tf.reshape(transformation["flip_horizontal"], [-1, 1, 1, 1])
+        flip_v = tf.reshape(transformation["flip_vertical"], [-1, 1, 1, 1])
 
-        def flip_single(image_and_flags):
-            img, flip_h, flip_v = image_and_flags
+        if self.horizontal:
+            image = tf.where(flip_h, tf.image.flip_left_right(image), image)
+        if self.vertical:
+            image = tf.where(flip_v, tf.image.flip_up_down(image), image)
 
-            if self.horizontal:
-                img = tf.cond(pred=flip_h,
-                              true_fn=lambda: tf.image.flip_left_right(img),
-                              false_fn=lambda: img)
-            if self.vertical:
-                img = tf.cond(pred=flip_v,
-                              true_fn=lambda: tf.image.flip_up_down(img),
-                              false_fn=lambda: img)
-            return img
-
-        # zip together images and per-image flags
-        elements = (image, flip_horizontal, flip_vertical)
-        flipped_outputs = tf.map_fn(fn=flip_single,
-                                    elems=elements,
-                                    fn_output_signature=tf.TensorSpec(shape=image.shape[1:],
-                                                                      dtype=image.dtype))
-
-        return flipped_outputs
+        return image
 
     def augment_label(self, label, transformation):
-        flip_horizontal = transformation['flip_horizontal']
-        flip_vertical = transformation['flip_vertical']
+        flip_h = tf.reshape(transformation["flip_horizontal"], [-1, 1, 1, 1])
+        flip_v = tf.reshape(transformation["flip_vertical"], [-1, 1, 1, 1])
 
-        def flip_single(label_and_flags):
-            lbl, flip_h, flip_v = label_and_flags
+        if self.horizontal:
+            label = tf.where(flip_h, tf.image.flip_left_right(label), label)
+        if self.vertical:
+            label = tf.where(flip_v, tf.image.flip_up_down(label), label)
 
-            if self.horizontal:
-                lbl = tf.cond(pred=flip_h,
-                              true_fn=lambda: tf.image.flip_left_right(lbl),
-                              false_fn=lambda: lbl)
-            if self.vertical:
-                lbl = tf.cond(pred=flip_v,
-                              true_fn=lambda: tf.image.flip_up_down(lbl),
-                              false_fn=lambda: lbl)
-            return lbl
+        return label
 
-        # zip together images and per-image flags
-        elements = (label, flip_horizontal, flip_vertical)
-        flipped_outputs = tf.map_fn(fn=flip_single,
-                                    elems=elements,
-                                    fn_output_signature=tf.TensorSpec(shape=label.shape[1:],
-                                                                      dtype=label.dtype))
+    def augment_bounding_boxes(self, images, bounding_boxes, transformation=None):
+        """
+        Applies horizontal and/or vertical flip to bounding boxes in a batched and GPU-friendly way.
 
-        return flipped_outputs
+        :param images: 4D Tensor of shape (B, H, W, C)
+        :param bounding_boxes: 3D Tensor of shape (B, N, 4), in [x_min, y_min, x_max, y_max] format
+        :param transformation: Dict containing 'flip_horizontal' and 'flip_vertical' (both shape [B])
+        :return: Transformed bounding_boxes, shape (B, N, 4)
+        """
+        image_shape = tf.shape(images)
+        batch_size = image_shape[0]
+        height = tf.cast(image_shape[1], tf.float32)
+        width = tf.cast(image_shape[2], tf.float32)
 
-    def augment_bounding_boxes(self, image, bounding_boxes, transformation=None):
-        transformation = transformation or self.get_random_transformation()
-        image = tf.expand_dims(image, 0)
-        image_shape = tf.shape(image)
-        h = image_shape[H_AXIS]
-        w = image_shape[W_AXIS]
-        bboxes_out = tf.identity(bounding_boxes)
-        if transformation["flip_horizontal"]:
-            bboxes_out = tf.stack(
-                [
-                    w - bboxes_out[:, 2],
-                    bboxes_out[:, 1],
-                    w - bboxes_out[:, 0],
-                    bboxes_out[:, 3],
-                ],
-                axis=-1,
-            )
-        if transformation["flip_vertical"]:
-            bboxes_out = tf.stack(
-                [
-                    bboxes_out[:, 0],
-                    h - bboxes_out[:, 3],
-                    bboxes_out[:, 2],
-                    h - bboxes_out[:, 1],
-                ],
-                axis=-1,
-            )
-        return bboxes_out
+        x_min, y_min, x_max, y_max = tf.split(bounding_boxes, 4, axis=-1)
+
+        flip_h = tf.cast(tf.reshape(transformation["flip_horizontal"], [batch_size, 1, 1]), tf.bool)
+        flip_v = tf.cast(tf.reshape(transformation["flip_vertical"], [batch_size, 1, 1]), tf.bool)
+
+        new_x_min = tf.where(flip_h, width - x_max, x_min)
+        new_x_max = tf.where(flip_h, width - x_min, x_max)
+
+        new_y_min = tf.where(flip_v, height - y_max, y_min)
+        new_y_max = tf.where(flip_v, height - y_min, y_max)
+
+        flipped_bboxes = tf.concat([new_x_min, new_y_min, new_x_max, new_y_max], axis=-1)
+        return flipped_bboxes
 
     def compute_output_shape(self, input_shape):
         return input_shape
