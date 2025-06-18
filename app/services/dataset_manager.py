@@ -5,7 +5,7 @@ Classes for processing images and masks for visual attributes model training
 
 import os
 import re
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, Dict, Type, Any
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,6 @@ from skimage.measure import label
 from skimage.segmentation import find_boundaries
 
 from app.utils import create_directory
-from app.utils.directory_file_management import create_directory
 
 
 class ImageAndMaskDatasetBuilder:
@@ -27,15 +26,19 @@ class ImageAndMaskDatasetBuilder:
                  images_directory: str,
                  masks_directory: str,
                  image_mask_channels: Tuple[int, int],
-                 final_image_shape: Union[Tuple[int, int], tuple, None] = None,
+                 final_image_shape: Optional[Tuple[int, int]] = None,
                  crop_image_and_mask: bool = False,
-                 crop_dimension: Tuple[int, int, int, int] = None,
+                 crop_dimension: Optional[Tuple[int, int, int, int]] = None,
                  normalize_image: bool = False,
                  normalization_divisor: Union[int, float] = 255,
                  split_mask_into_channels: bool = False,
                  batch_size: Optional[int] = None,
                  shuffle_buffer_size: Optional[int] = None,
-                 prefetch_data: bool = None,
+                 return_2d_mask: bool = False,
+                 prefetch_data: Optional[bool] = None,
+                 return_dict: bool = False,
+                 image_key: str = 'image',
+                 mask_key: str = 'mask',
                  cache_directory: Optional[str] = None,
                  ):
         """
@@ -53,12 +56,39 @@ class ImageAndMaskDatasetBuilder:
         :param prefetch_data: bool - Whether to prefetch data using tf.data.AUTOTUNE.
         :param cache_directory: str - Path to a directory for caching the dataset to disk. If `None`,
         caching is skipped. To cache the dataset in memory, set cache_directory to ''.
+        :param return_dict: If True, the image-mask pair will be returned as a dict. for example
+            if image_key and mask_key is set to 'image' and 'mask', the dataset will return as
+            {'image': tf.Tensor, 'mask': tf.Tensor}
+        :param image_key: key for the image tensor when returned as a dict.
+        :param mask_key: key for the mask tensor, when returned as a dict.
         """
+
+        self.check_type(params_and_types={
+            'images_directory': (images_directory, str, False),
+            'masks_directory': (masks_directory, str, False),
+            'image_mask_channels': (image_mask_channels, tuple, False),
+            'final_image_shape': (final_image_shape, tuple, True),
+            'crop_image_and_mask': (crop_image_and_mask, bool, False),
+            'crop_dimension': (crop_dimension, tuple, True),
+            'normalize_image': (normalize_image, bool, False),
+            'normalization_divisor': (normalization_divisor, (int, float), False),
+            'split_mask_into_channels': (split_mask_into_channels, bool, False),
+            'batch_size': (batch_size, int, True),
+            'shuffle_buffer_size': (shuffle_buffer_size, int, True),
+            'return_2d_mask': (return_2d_mask, bool, False),
+            'prefetch_data': (prefetch_data, bool, True),
+            'return_dict': (return_dict, bool, False),
+            'image_key': (image_key, str, False),
+            'mask_key': (mask_key, str, False),
+            'cache_directory': (cache_directory, str, True),
+        })
 
         self.images_directory = images_directory
         self.masks_directory = masks_directory
         self.crop_dimension = crop_dimension
         self.crop_image_and_mask = crop_image_and_mask
+        self.image_key = image_key
+        self.mask_key = mask_key
 
         # Generate filepaths to the images and masks
         self.original_image_paths, self.original_mask_paths = self._get_sorted_filepaths_to_images_and_masks(
@@ -93,6 +123,8 @@ class ImageAndMaskDatasetBuilder:
         self.image_mask_channels = image_mask_channels
         self.image_channels = self.image_mask_channels[0]
         self.mask_channels = self.image_mask_channels[1]
+        self.return_2d_mask = return_2d_mask
+        self.return_dict = return_dict
 
         # set the initial shape of the images and masks.
         self.image_shape, self.mask_shape = self._get_image_and_mask_shape(image_path=img_path,
@@ -140,9 +172,9 @@ class ImageAndMaskDatasetBuilder:
         self.unique_intensities = None
 
         # Generate class labels for the segmentation masks
+        self.get_mask_class_labels()
+        self.lookup_table = self.build_lookup_table()
         self.split_mask_into_channels = split_mask_into_channels
-        if split_mask_into_channels:
-            self.get_mask_class_labels()
 
         self.normalize_image = normalize_image
         self.normalization_divisor = normalization_divisor
@@ -161,6 +193,44 @@ class ImageAndMaskDatasetBuilder:
                 self.cache_directory = ''
         else:
             self.cache_directory = None
+
+
+    @staticmethod
+    def check_type(params_and_types: Dict[str, Tuple[Any, Union[Type, Tuple[Type, ...]], bool]]):
+        """
+        Validates that each parameter value matches its expected type, and handles optional parameters.
+
+        :param params_and_types: A dictionary where each key is a parameter name, and the value is a tuple:
+            (value, expected_type(s), is_optional), where:
+                - value: The actual value to validate.
+                - expected_type(s): A type or tuple of types that the value is expected to match.
+                - is_optional: If True, allows the value to be None.
+
+            Example:
+                check_type({
+                    "name": ("Alice", str, False),
+                    "age": (None, int, True),
+                    "scores": ([90, 95], list, False),
+                })
+
+        :raises TypeError:
+            - If a value is None and is_optional is False.
+            - If a value does not match the expected type(s).
+        """
+        for param_name, (value, expected_types, is_optional) in params_and_types.items():
+            if value is None:
+                if is_optional:
+                    continue
+                else:
+                    raise TypeError(f"{param_name} must not be None.")
+
+            if not isinstance(value, expected_types):
+                allowed_types = (
+                    expected_types.__name__
+                    if isinstance(expected_types, type)
+                    else ', '.join(t.__name__ for t in expected_types)
+                )
+                raise TypeError(f"{param_name} must be of type {allowed_types}. Got {type(value).__name__}.")
 
     @staticmethod
     def sort_filenames(file_paths):
@@ -306,7 +376,7 @@ class ImageAndMaskDatasetBuilder:
                                    method='nearest')
             mask = tf.reshape(tensor=mask, shape=(self.new_image_height, self.new_image_width, self.mask_channels))
 
-            mask = tf.reshape(tensor=mask, shape=(self.new_image_height, self.new_image_width))
+            # mask = tf.reshape(tensor=mask, shape=(self.new_image_height, self.new_image_width))
 
             # The resize operation returns image & mask in float values (eg. 125.2, 233. 4),
             # before augmentation, these pixel values need to be normalized to the range [0 - 1],
@@ -314,7 +384,7 @@ class ImageAndMaskDatasetBuilder:
             # round up the current float pixel intensities to whole numbers using tf.cast(image, tf.uint8).
             image, mask = self._cast_image_mask_to_uint8(image, mask)
 
-        if mask.ndim == 3:
+        if mask.ndim == 3 and self.return_2d_mask and not self.split_mask_into_channels:
             if mask.shape[-1] == 1:
                 mask = tf.reshape(tensor=mask, shape=(self.new_image_height, self.new_image_width))
             else:
@@ -337,25 +407,44 @@ class ImageAndMaskDatasetBuilder:
 
         for path in img_paths:
             unique_intensities.update(self.get_mask_unique_intensities(path))
-        self.unique_intensities = unique_intensities
+        self.unique_intensities = list(unique_intensities)
+
+    def build_lookup_table(self):
+        unique_intensities = tf.constant(self.unique_intensities)
+
+        table = tf.lookup.StaticHashTable(
+            initializer=tf.lookup.KeyValueTensorInitializer(
+                keys=unique_intensities,
+                values=tf.range(len(unique_intensities), dtype=tf.int32)
+            ),
+            default_value=-1    # Optional: helps catch invalid classes
+        )
+        return table
+
+    def map_class_to_contiguous_indices(self, image, mask):
+        mask = tf.cast(mask, dtype=tf.int32)
+        return image, self.lookup_table.lookup(keys=mask)
 
     def _split_mask_into_channels(self, image, mask):
         """Split mask into channels."""
 
-        mask = tf.cast(mask, dtype=tf.uint8)
-        stack_list = []
-
-        # For each class intensity, generate a binary channel showing pixels belonging to that class
-        for intensity in self.unique_intensities:
-            # Produce a temporary mask depicting all the pixel locations on the original tensor named 'mask'
-            # that have the same pixel intensity as  the integer 'class_index'. we want to
-            temp_mask = tf.equal(mask[..., 0], tf.constant(intensity, dtype=tf.uint8))
-            # add each temporary mask to the stack_list.
-            stack_list.append(tf.cast(temp_mask, dtype=tf.uint8))
-
-        # stack all the temporary masks within the stack_list, so together they form the third axis of the
-        # overall mask. Hence, the overall mask would be of dimension [height, width, number_of_classes]
-        mask = tf.stack(stack_list, axis=-1)  # Axis starts from 0, so axis of 2 represents the third axis
+        # mask = tf.cast(mask, dtype=tf.uint8)
+        # stack_list = []
+        #
+        # # For each class intensity, generate a binary channel showing pixels belonging to that class
+        # for intensity in self.unique_intensities:
+        #     # Produce a temporary mask depicting all the pixel locations on the original tensor named 'mask'
+        #     # that have the same pixel intensity as  the integer 'class_index'. we want to
+        #     temp_mask = tf.equal(mask[..., 0], tf.constant(intensity, dtype=tf.uint8))
+        #     # add each temporary mask to the stack_list.
+        #     stack_list.append(tf.cast(temp_mask, dtype=tf.uint8))
+        #
+        # # stack all the temporary masks within the stack_list, so together they form the third axis of the
+        # # overall mask. Hence, the overall mask would be of dimension [height, width, number_of_classes]
+        # mask = tf.stack(stack_list, axis=-1)  # Axis starts from 0, so axis of 2 represents the third axis
+        if mask.shape[-1] == 1:
+            mask = tf.squeeze(mask, axis=-1)
+        mask = tf.one_hot(indices=mask, depth=len(self.unique_intensities), dtype=tf.float32)
         return image, mask
 
     def _normalize_image(self, image, mask):
@@ -382,6 +471,7 @@ class ImageAndMaskDatasetBuilder:
         image, mask = self._crop_image_and_mask(image=image, mask=mask)
         image, mask = self._resize_image_and_mask(image=image, mask=mask)
         image, mask = self._normalize_image(image=image, mask=mask)
+        image, mask = self.map_class_to_contiguous_indices(image=image, mask=mask)
 
         if self.split_mask_into_channels:
             image, mask = self._split_mask_into_channels(image=image, mask=mask)
@@ -390,6 +480,9 @@ class ImageAndMaskDatasetBuilder:
     def _get_dataset(self, image_paths, mask_paths):
         dataset = tf.data.Dataset.from_tensor_slices((image_paths, mask_paths))
         dataset = dataset.map(self._read_crop_resize_image_and_mask, num_parallel_calls=self.tune)
+
+        if self.return_dict:
+            dataset = dataset.map(lambda image, mask: {self.image_key: image, self.mask_key: mask})
 
         if self.cache_directory is not None:
             dataset = dataset.cache(filename=self.cache_directory)
@@ -401,7 +494,7 @@ class ImageAndMaskDatasetBuilder:
             dataset = dataset.batch(batch_size=self.batch_size, drop_remainder=True)
 
         if self.prefetch_data:
-            dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+            dataset = dataset.repeat().prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
 
         self.image_mask_dataset = dataset
 
@@ -409,7 +502,7 @@ class ImageAndMaskDatasetBuilder:
         self._get_dataset(self.original_image_paths, self.original_mask_paths)
 
 
-class ImageMaskVisualDatasetBuilder:
+class ImageMaskVisualDatasetBuilder:        # todo: if validation and testing directory are None, don't throw error.
 
     def __init__(self,
                  train_directory: Optional[str] = None,
@@ -503,6 +596,7 @@ class ImageMaskVisualDatasetBuilder:
             final_image_shape=final_image_shape,
             crop_image_and_mask=crop_image_and_mask,
             crop_dimension=crop_dimension,
+            return_2d_mask=True
         )
         train_dataset_builder.run()
         self.training_dataset = train_dataset_builder.image_mask_dataset
@@ -516,6 +610,7 @@ class ImageMaskVisualDatasetBuilder:
             final_image_shape=final_image_shape,
             crop_image_and_mask=crop_image_and_mask,
             crop_dimension=crop_dimension,
+            return_2d_mask=True
         )
         val_dataset_builder.run()
         self.validation_dataset = val_dataset_builder.image_mask_dataset
@@ -529,6 +624,7 @@ class ImageMaskVisualDatasetBuilder:
             final_image_shape=final_image_shape,
             crop_image_and_mask=crop_image_and_mask,
             crop_dimension=crop_dimension,
+            return_2d_mask=True
         )
         test_dataset_builder.run()
         self.test_dataset = test_dataset_builder.image_mask_dataset
