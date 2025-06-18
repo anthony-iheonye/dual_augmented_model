@@ -2313,7 +2313,7 @@ class RandomContrast(AugmentationLayer):
                  factor: Union[float, List[float], Tuple[float, float]] = (0.1, 1.0),
                  active: bool = True,
                  seed: int = None,
-                 image_intensity_range=(0.0, 255.0),
+                 image_intensity_range=(0, 255),
                  image_key: str = 'images',
                  target_key: str = 'targets',
                  bounding_box_key: str = "bounding_boxes",
@@ -2329,34 +2329,30 @@ class RandomContrast(AugmentationLayer):
                          name=name,
                          **kwargs)
 
-        base_preprocessing_layer.keras_kpl_gauge.get_cell("RandomDualContrast").set(True)
         self.factor = factor
-        self.value_range = image_intensity_range
-
-        self._set_factor(factor)
-        self._set_value_range(image_intensity_range)
-
-    def _set_value_range(self, value_range):
-        if not isinstance(value_range, (tuple, list)):
-            raise ValueError(
-                self._VALUE_RANGE_VALIDATION_ERROR + f"Got {value_range}")
-
-        if len(value_range) != 2:
-            raise ValueError(
-                self._VALUE_RANGE_VALIDATION_ERROR + f"Got {value_range}")
-
-        self._value_range = sorted(value_range)
-
-    def _set_factor(self, factor):
         if isinstance(factor, (tuple, list)):
             self.lower = factor[0]
             self.upper = factor[1]
         else:
             self.lower = self.upper = factor
+
         if self.lower < 0.0 or self.upper < 0.0 or self.lower > 1.0:
             raise ValueError(
-                "Factor cannot have negative values or be greater than 1.0,"
-                " got {}".format(factor))
+                "`factor` argument cannot have negative values or values "
+                "greater than 1."
+                f"Received: factor={factor}"
+            )
+
+        if not isinstance(image_intensity_range, (tuple, list)):
+            raise ValueError(
+                self._VALUE_RANGE_VALIDATION_ERROR + f"Got {image_intensity_range}")
+
+        if len(image_intensity_range) != 2:
+            raise ValueError(
+                self._VALUE_RANGE_VALIDATION_ERROR + f"Got {image_intensity_range}")
+
+        self.seed = seed
+        self.clip_value_range = sorted(image_intensity_range)
 
     def augment_image(self, image, transformation):
 
@@ -2377,11 +2373,12 @@ class RandomContrast(AugmentationLayer):
                     seed=self._random_generator.make_legacy_seed()
                 )
             output = tf.clip_by_value(t=output,
-                                      clip_value_min=self._value_range[0],
-                                      clip_value_max=self._value_range[1])
+                                      clip_value_min=self.clip_value_range[0],
+                                      clip_value_max=self.clip_value_range[1])
             return output
 
-        return random_contrasted_inputs(image)
+        # wrap in `tf.stop_gradient` to make AdjustContrastV2 Non-differentiable
+        return tf.stop_gradient(random_contrasted_inputs(image))
 
     def augment_label(self, label, transformation):
         return label
