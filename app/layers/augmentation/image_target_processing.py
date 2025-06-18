@@ -1634,3 +1634,336 @@ class RandomZoom(AugmentationLayer):
                 "interpolation": self.interpolation,
             })
         return config
+
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='AffineTransform')
+class AffineTransform(AugmentationLayer):
+    """
+    A preprocessing layer that applies affine transformations—rotation, shear, and zoom—
+    to images and, if provided, their segmentation masks and bounding boxes.
+
+    Each transformation can be toggled independently using the `rotate`, `shear`, and `zoom` flags.
+    Transformations are only applied during training when `active=True`. During inference or when
+    inactive, the layer behaves as a no-op and returns all inputs unchanged.
+
+    Input shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 1D, 2D, 3D, or 4D tensor}
+
+        `images` must follow shape `(..., height, width, channels)` using `"channels_last"` format.
+        `targets` can be 1D–4D. If 2D or lower, the target will not be augmented.
+
+    Output shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 1D, 2D, 3D, or 4D tensor}
+
+        Output shape and format are identical to input.
+
+    Arguments:
+      rotate: Boolean indicating whether to apply random rotation during training.
+      theta: A float, int, tuple, or list specifying the rotation angle in degrees.
+         - Range: -180 to +180
+         - If scalar: sampled from [-theta, +theta]
+         - If tuple/list: sampled from [theta[0], theta[1]]
+      shear: Boolean indicating whether to apply random shear during training.
+      shear_angle: A float, list, or tuple specifying the shear angle in degrees.
+         - Range: -20 to +20 recommended
+         - If scalar: sampled from [-shear_angle, +shear_angle]
+         - If tuple/list: sampled from [shear_angle[0], shear_angle[1]]
+      zoom: Boolean indicating whether to apply random zoom during training.
+      zoom_factor: A float, int, tuple, or list specifying the zoom scale in percentage.
+         - Range: 1 to 200 (percent of original size)
+         - If scalar `x`: interpreted as (-x, +x), applied as percent deviation from original
+         - If tuple/list: sampled from [zoom_factor[0], zoom_factor[1]]
+      fill_mode: Strategy used to fill pixels outside the transformed image boundaries.
+         One of: `{"constant", "reflect", "wrap", "nearest"}`.
+         - *reflect*: `(d c b a | a b c d | d c b a)` — reflects about the edge of the last pixel.
+         - *constant*: `(k k k k | a b c d | k k k k)` — fills with constant value `k` (default 0).
+         - *wrap*: `(a b c d | a b c d | a b c d)` — wraps around to the opposite edge.
+         - *nearest*: `(a a a a | a b c d | d d d d)` — extends using nearest edge pixel.
+      interpolation: Interpolation method used for resampling. One of: `"nearest"`, `"bilinear"`.
+      fill_value: Float value to use when `fill_mode="constant"` to fill empty space.
+      image_key: Key used to retrieve the image tensor from the input dictionary.
+      target_key: Key used to retrieve the mask or label tensor from the input dictionary.
+      bounding_box_key: Key used to retrieve bounding box data from the input dictionary.
+      name: Name assigned to the layer instance.
+      kwargs: Additional keyword arguments passed to the base `AugmentationLayer`.
+
+    Raises:
+      TypeError: If any transformation parameter is of an invalid type.
+      ValueError: If theta, shear_angle, or zoom_factor are out of range or malformed
+        (e.g., upper < lower or negative zoom).
+    """
+
+    def __init__(self,
+                 rotate: bool = False,
+                 theta: Union[int, List[int], Tuple[int, int], None] = 180,
+                 shear: bool = False,
+                 shear_angle: Union[list, tuple, float, None] = 2,
+                 zoom: bool = False,
+                 zoom_factor: Union[int, list, tuple, None] = (1, 90),
+                 fill_mode="reflect",
+                 interpolation="bilinear",
+                 fill_value=0.0,
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 batches_before_aug: Optional[int] = None,
+                 name='affine_transform',
+                 **kwargs):
+        """
+        :param rotate: bool, If rotate is set to `True`, the images and their corresponding
+            segmentation masks (if available) will be randomly rotated during training.
+            be applied to the images and segmentation masks.
+        :param theta: a float, int, tuple or list, representing the angle by which the
+            image and mask would be rotated. If is a single value (int or float) the
+            rotation range would be between [-angle, angle]
+        :param shear: bool, If shear is set to `True`, the images and their corresponding
+            segmentation masks (if available) will be randomly sheared during training.
+            be applied to the images and segmentation masks.
+        :param shear_angle: float, Transformation intensity in degrees.
+        :param zoom: bool, If zoom is set to `True`, the images and their corresponding
+            segmentation masks (if available) will be randomly zoomed during training.
+            be applied to the images and segmentation masks.
+        :param zoom_factor:
+        :param fill_mode: Points outside the boundaries of the input are filled according
+            to the given mode (one of `{"constant", "reflect", "wrap", "nearest"}`).
+             - *reflect*: `(d c b a | a b c d | d c b a)` The input is extended by
+               reflecting about the edge of the last pixel.
+             - *constant*: `(k k k k | a b c d | k k k k)` The input is extended by
+               filling all values beyond the edge with the same constant value k = 0.
+             - *wrap*: `(a b c d | a b c d | a b c d)` The input is extended by
+               wrapping around to the opposite edge.
+             - *nearest*: `(a a a a | a b c d | d d d d)` The input is extended by
+               the nearest pixel.
+        :param interpolation: Interpolation mode. Supported values: `"nearest"`,
+            `"bilinear"`.
+        :param fill_value: a float represents the value to be filled outside the
+         boundaries when `fill_mode="constant"`.
+        """
+        base_preprocessing_layer.keras_kpl_gauge.get_cell("DualAffineTransform").set(True)
+
+        super().__init__(image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key,
+                         batches_before_aug=batches_before_aug,
+                         name=name,
+                         **kwargs)
+
+        if any([rotate, shear, zoom]):
+            self.active = tf.Variable(tf.constant(True), dtype=tf.bool, trainable=False)
+        else:
+            self.active = tf.Variable(tf.constant(False), dtype=tf.bool, trainable=False)
+
+        check_fill_mode_and_interpolation(fill_mode, interpolation)
+        self.rotate = tf.Variable(tf.constant(rotate), dtype=tf.bool, trainable=False)
+        self.theta = theta
+        self.rotate_initially_active = rotate
+
+        self.shear = tf.Variable(tf.constant(shear), dtype=tf.bool, trainable=False)
+        self.shear_angle = shear_angle
+        self.shear_initially_active = shear
+
+        self.zoom = tf.Variable(tf.constant(zoom), dtype=tf.bool, trainable=False)
+        self.zoom_factor = zoom_factor
+        self.zoom_initially_active = zoom
+
+        self.fill_mode = fill_mode
+        self.fill_value = fill_value
+        self.interpolation = interpolation
+
+        # Check input value
+        self.check_rotate_values()
+        self.check_shear_values()
+        self.check_zoom_values()
+
+    def get_random_transformation(self, image=None, label=None, bounding_box=None):
+        """Generate transformation parameters for rotation, shear and zoom"""
+        batch_size = tf.shape(image)[0]
+
+        # Default theta, shear, and zoom to 0, 0, 1, so that image is not rotated, sheared or zoomed.
+        # when their (zoom, rotation or shear) matrix is multiplied by transformed matrix in
+        # .get_transform_matrix method.
+        transform_parameters = {
+            'theta': tf.zeros(shape=[batch_size], dtype=tf.float32),
+            'shear': tf.zeros(shape=[batch_size], dtype=tf.float32),
+            'zoom': tf.ones(shape=[batch_size], dtype=tf.float32)
+        }
+
+        # Rotation
+        if self.apply_rotate:
+            transform_parameters['theta'] = tf.random.uniform(
+                shape=[batch_size], minval=self.rotate_lower, maxval=self.rotate_upper)
+
+        # Shear
+        if self.apply_shear:
+            transform_parameters['shear'] = tf.random.uniform(
+                shape=[batch_size], minval=self.shear_lower, maxval=self.shear_upper)
+
+        # Zoom
+        if self.apply_zoom:
+            transform_parameters['zoom'] = tf.random.uniform(
+                shape=[batch_size], minval=1.0 - self.zoom_lower, maxval=1.0 - self.zoom_upper)
+
+        return transform_parameters
+
+    @staticmethod
+    def get_transform_matrix(transform_parameters):
+        """
+        Produces the transform matrix for conducting all the geometric
+        transformed that have been chosen.
+        """
+        theta = transform_parameters['theta']
+        shear = transform_parameters['shear']
+        zoom = transform_parameters['zoom']
+
+        cos_theta = tf.cos(theta)
+        sin_theta = tf.sin(theta)
+
+        batch_size = tf.shape(theta)[0]
+        zeros = tf.zeros([batch_size], dtype=tf.float32)
+        ones = tf.ones([batch_size], dtype=tf.float32)
+
+        rotation_matrices = tf.stack([
+            tf.stack([cos_theta, -sin_theta, zeros], axis=1),
+            tf.stack([sin_theta, cos_theta, zeros], axis=1),
+            tf.stack([zeros, zeros, ones], axis=1)
+        ], axis=1)  # shape: [batch_size, 3, 3]
+
+        shear_matrices = tf.stack([
+            tf.stack([ones, -tf.sin(shear), zeros], axis=1),
+            tf.stack([zeros, tf.cos(shear), zeros], axis=1),
+            tf.stack([zeros, zeros, ones], axis=1)
+        ], axis=1)
+
+        zoom_matrices = tf.stack([
+            tf.stack([zoom, zeros, zeros], axis=1),
+            tf.stack([zeros, zoom, zeros], axis=1),
+            tf.stack([zeros, zeros, ones], axis=1)
+        ], axis=1)
+
+        # Combine
+        return tf.matmul(tf.matmul(rotation_matrices, shear_matrices), zoom_matrices)  # shape: [batch, 3, 3]
+
+    def augment_image(self, image, transformation):
+        image = utils.ensure_tensor(image, self.compute_dtype)
+        image_shape = tf.shape(image)
+
+        img_hd = tf.cast(image_shape[H_AXIS], tf.float32)
+        img_wd = tf.cast(image_shape[W_AXIS], tf.float32)
+
+        transform_matrix = self.get_transform_matrix(transform_parameters=transformation)
+        centered_matrix = center_transformation_matrix(transform_matrix, img_hd, img_wd)
+
+        output = transform(images=image,
+                           transforms=centered_matrix,
+                           fill_mode=self.fill_mode,
+                           fill_value=self.fill_value,
+                           interpolation=self.interpolation,
+                           )
+        return output
+
+    def augment_label(self, label, transformation):
+        label = utils.ensure_tensor(label, self.compute_dtype)
+        image_shape = tf.shape(label)
+
+        label_hd = tf.cast(image_shape[H_AXIS], tf.float32)
+        label_wd = tf.cast(image_shape[W_AXIS], tf.float32)
+
+        transform_matrix = self.get_transform_matrix(transform_parameters=transformation)
+        centered_matrix = center_transformation_matrix(transform_matrix, label_hd, label_wd)
+
+        output = transform(images=label,
+                           transforms=centered_matrix,
+                           fill_mode=self.fill_mode,
+                           fill_value=self.fill_value,
+                           interpolation='nearest',
+                           )
+        return output
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+    def check_rotate_values(self):
+        """Check the rotation range and values"""
+        if self.rotate and self.theta is not None:
+            self.apply_rotate = True
+
+            check_input(inputs=self.theta, name='theta', input_range=(0, 180))
+
+            if isinstance(self.theta, (tuple, list)):
+                self.rotate_lower = np.deg2rad(self.theta[0])
+                self.rotate_upper = np.deg2rad(self.theta[1])
+
+            elif isinstance(self.theta, (int, float)):
+                self.rotate_lower = np.deg2rad(-self.theta)
+                self.rotate_upper = np.deg2rad(self.theta)
+            else:
+                raise TypeError(
+                    "`theta` must be a list, tuple, int or float. "
+                    "Got {} of type {}".format(self.theta, type(self.theta))
+                )
+        else:
+            self.apply_rotate = False
+
+    def check_shear_values(self):
+        """Check the shear state and range"""
+        if self.shear and self.shear_angle is not None:
+            self.apply_shear = True
+
+            check_input(inputs=self.shear_angle, name='shear_angle', input_range=(-45, 45))
+
+            if isinstance(self.shear_angle, (tuple, list)):
+                self.shear_lower = np.deg2rad(self.shear_angle[0])
+                self.shear_upper = np.deg2rad(self.shear_angle[1])
+
+            elif isinstance(self.shear_angle, (int, float)):
+                self.shear_lower = np.deg2rad(-self.shear_angle)
+                self.shear_upper = np.deg2rad(self.shear_angle)
+            else:
+                raise TypeError(
+                    "The shear_angle must be a list, tuple, int or float. Got {} of type {}".format(self.shear_angle,
+                                                                                                    type(
+                                                                                                        self.shear_angle))
+                )
+
+        else:
+            self.apply_shear = False
+
+    def check_zoom_values(self):
+        """Check the zoom state and range"""
+        custom_interp_datapoints = [-200.0, -100.0, 0.0, 100.0, 200.0]
+        tensorflow_interp_datapoints = [-1.0, -0.5, 0.0, 0.5, 1.0]
+
+        if self.zoom and self.zoom_factor is not None:
+            self.apply_zoom = True
+
+            check_input(inputs=self.zoom_factor, name='zoom_factor', input_range=(1, 200))
+            zoom_factor = interpolate_to_tensorflow_value(custom_value=self.zoom_factor,
+                                                          custom_datapoints=custom_interp_datapoints,
+                                                          tensorflow_datapoints=tensorflow_interp_datapoints)
+
+            if isinstance(self.zoom_factor, (tuple, list)):
+                self.zoom_lower = zoom_factor[0]
+                self.zoom_upper = zoom_factor[1]
+            else:
+                self.zoom_lower = -zoom_factor
+                self.zoom_upper = zoom_factor
+
+        else:
+            self.apply_zoom = False
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"rotate": self.rotate,
+                       "theta": self.theta,
+                       "shear": self.shear,
+                       "shear_angle": self.shear_angle,
+                       "zoom": self.zoom,
+                       "zoom_factor": self.zoom_factor,
+                       "fill_mode": self.fill_mode,
+                       "fill_value": self.fill_value,
+                       "interpolation": self.interpolation
+                       })
+
+        return config
