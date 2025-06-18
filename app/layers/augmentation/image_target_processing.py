@@ -1261,3 +1261,145 @@ class RandomFlip(AugmentationLayer):
         config = super().get_config()
         config.update({"mode": self.mode})
         return config
+
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomShear')
+class RandomShear(AugmentationLayer):
+    """
+    A preprocessing layer which randomly applies shear transformations during training.
+
+    This layer performs a random shear on each image and its corresponding segmentation mask
+    (if available), filling any resulting empty regions according to the specified `fill_mode`
+    and `interpolation` strategy. Shearing is only applied during training when `active=True`.
+    At inference time or when inactive, the layer behaves as a no-op and all inputs—including
+    images, targets, and bounding boxes—are passed through unchanged.
+
+    Input shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 1D, 2D, 3D, or 4D tensor}
+
+        `images` must follow shape `(..., height, width, channels)` using `"channels_last"` format.
+        `targets` can be 1D–4D. If 2D or lower, the target will not be augmented.
+
+    Output shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 1D, 2D, 3D, or 4D tensor}
+
+        Output shape and format are identical to input.
+
+    Arguments:
+      shear_angle: A float, list, or tuple specifying the shear angle in degrees. If a scalar
+          is provided, the angle will be sampled from [-shear_angle, +shear_angle]. If a tuple
+          or list of two values is provided, the shear angle is sampled from (angle[0], angle[1]).
+      active: Whether the layer is active during training. If False, input is returned unchanged.
+      name: Name assigned to the layer instance.
+      fill_mode: Strategy used to fill pixels outside the transformed image boundaries.
+         One of: `{"constant", "reflect", "wrap", "nearest"}`.
+         - *reflect*: `(d c b a | a b c d | d c b a)` — reflects about the edge of the last pixel.
+         - *constant*: `(k k k k | a b c d | k k k k)` — fills with constant value `k` (default 0).
+         - *wrap*: `(a b c d | a b c d | a b c d)` — wraps around to the opposite edge.
+         - *nearest*: `(a a a a | a b c d | d d d d)` — extends using nearest edge pixel.
+      interpolation: Interpolation mode used for resampling. One of: `"nearest"`, `"bilinear"`.
+      image_key: Key used to retrieve the image tensor from the input dictionary.
+      target_key: Key used to retrieve the mask or label tensor from the input dictionary.
+      bounding_box_key: Key used to retrieve bounding box data from the input dictionary.
+      kwargs: Additional keyword arguments passed to the base `AugmentationLayer`.
+
+    Raises:
+      TypeError: If `shear_angle` is not a float, int, list, or tuple.
+      ValueError: If `shear_angle` is a list/tuple of length not equal to 2, or if upper < lower.
+    """
+
+    def __init__(self,
+                 shear_angle: Union[list, tuple, float] = (0, 5),
+                 active: bool = True,
+                 name: str = 'random_shear',
+                 fill_mode="reflect",
+                 interpolation="bilinear",
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 batches_before_aug: Optional[int] = None,
+                 **kwargs):
+
+        super().__init__(name=name,
+                         active=active,
+                         image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key,
+                         batches_before_aug=batches_before_aug,
+                         **kwargs)
+
+        self.shear_angle = shear_angle
+
+        check_input(inputs=shear_angle, name='shear_angle', input_range=(-45, 45))
+
+        if isinstance(shear_angle, (tuple, list)):
+            self.lower = np.deg2rad(shear_angle[0])
+            self.upper = np.deg2rad(shear_angle[1])
+
+        elif isinstance(shear_angle, (int, float)):
+            self.lower = np.deg2rad(-shear_angle)
+            self.upper = np.deg2rad(shear_angle)
+
+        else:
+            raise TypeError(
+                "The shear_angle must be a list, tuple, int or float. Got {} of type {}".format(shear_angle,
+                                                                                                type(shear_angle))
+            )
+
+        if self.upper < self.lower:
+            raise ValueError(
+                "The upper boundary cannot be less than the lower boundary. Got shear_angle = {}".format(shear_angle)
+            )
+
+        check_fill_mode_and_interpolation(fill_mode, interpolation)
+        self.fill_mode = fill_mode
+        self.interpolation = interpolation
+
+    def get_random_transformation(self, image=None, label=None, bounding_box=None):
+        batch_size = tf.shape(image)[0]
+        angles = tf.random.uniform(shape=[batch_size], minval=self.lower, maxval=self.upper)
+        return {"angles": angles}
+
+    def augment_image(self, image, transformation):
+        image = utils.ensure_tensor(image, self.compute_dtype)
+        image_shape = tf.shape(image)
+
+        img_hd = tf.cast(image_shape[H_AXIS], tf.float32)
+        img_wd = tf.cast(image_shape[W_AXIS], tf.float32)
+        angles = transformation["angles"]
+
+        output = transform(images=image,
+                           transforms=get_shear_matrix(angles, img_hd, img_wd),
+                           fill_mode=self.fill_mode,
+                           interpolation=self.interpolation,
+                           )
+
+        return output
+
+    def augment_label(self, label, transformation):
+        label = utils.ensure_tensor(label, self.compute_dtype)
+        image_shape = tf.shape(label)
+
+        label_hd = tf.cast(image_shape[H_AXIS], tf.float32)
+        label_wd = tf.cast(image_shape[W_AXIS], tf.float32)
+
+        angles = transformation["angles"]
+        output = transform(images=label,
+                           transforms=get_shear_matrix(angles, label_hd, label_wd),
+                           fill_mode=self.fill_mode,
+                           interpolation='nearest')
+
+        return output
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"shear_angle": self.shear_angle,
+                       "fill_mode": self.fill_mode,
+                       "interpolation": self.interpolation})
+        return config
+
