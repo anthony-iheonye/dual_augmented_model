@@ -118,81 +118,70 @@ class MorphologicalLayer(Layer):
 
 @register_keras_serializable(package='Unet', name='ExpandLabelAxis')
 class ExpandLabelAxis(Layer):
+    """
+    A non-trainable Keras layer that expands a segmentation mask into one-hot encoded format
+    by adding a label axis corresponding to the number of classes.
+
+    This layer is commonly used in semantic segmentation pipelines where ground truth masks
+    are provided as integer class indices (e.g., shape [B, H, W] or [B, H, W, 1]) and must be
+    converted to one-hot encoded tensors (e.g., [B, H, W, C]) for compatibility with softmax-based
+    model outputs and loss functions such as categorical crossentropy or Dice loss.
+
+    If the input tensor is already one-hot encoded (i.e., has shape [B, H, W, num_classes]),
+    it is returned unchanged, cast to float32. If the input has rank < 3 (e.g., for classification
+    or regression targets), it is assumed not to be a segmentation mask and is returned as-is.
+
+    Attributes:
+        num_classes (int): Number of segmentation classes. Used as the depth for one-hot encoding.
+
+    Example:
+        >>> mask = tf.constant([[[1], [0]], [[2], [1]]])  # shape (2, 2, 1)
+        >>> mask = tf.expand_dims(mask, axis=0)          # shape (1, 2, 2, 1)
+        >>> layer = ExpandLabelAxis(num_classes=3)
+        >>> one_hot = layer(mask)                        # shape (1, 2, 2, 3)
+    """
+
     def __init__(self, num_classes: int, name='processed_mask'):
-        super(ExpandLabelAxis, self).__init__(name=name, trainable=False, dtype=tf.int32)
+        super().__init__(name=name, trainable=False, dtype=tf.int32)
         self.num_classes = num_classes
 
     def __repr__(self):
         return f"{self.name}"
 
     def call(self, inputs, **kwargs):
-        x = self._add_label_channels(mask=inputs)
-        return x
+        """
+        Applies label expansion to a segmentation mask tensor if applicable.
 
-    def _add_label_channels_old(self, mask):
-        """Adds label channels to the mask."""
-        if mask.shape[-1] > 1:
-            return mask
+        Args:
+            inputs: Tensor of shape [B, H, W], [B, H, W, 1], or [B, H, W, C].
+                    If shape rank < 3 (e.g., classification or regression targets),
+                    the tensor is returned unchanged (cast to float32).
 
-        mask = tf.cast(mask, dtype=tf.int32)
-        stack_array = tf.TensorArray(dtype=tf.float64, size=self.num_classes, dynamic_size=False)
-
-        # Create individual tensor array for each class. Each tensor would display the area on the original
-        # mask that is occupied by individual classes. If we have three classes - background, pea, and outline,
-        # we would have a final mask whose last axis will have 3 layers/channels.
-        for class_index in tf.range(self.num_classes):
-            # Produce a temporary mask depicting all the pixel locations on the original tensor named 'mask'
-            # that have the same pixel intensity as  the integer 'class_index'.
-            temp_mask = tf.equal(mask[..., 0], tf.constant(class_index, dtype=tf.int32))
-            # add each temporary mask to the TensorArray.
-            stack_array = stack_array.write(index=class_index,
-                                            value=tf.cast(temp_mask, dtype=tf.float64))
-
-        # stack all the temporary masks within the stack_array, so together they form the third axis of the
-        # overall mask. The result have the shape [num_classes, height, width], hence we will reshape using
-        # the `einops.rearrange` method
-        mask = stack_array.stack()
-        mask = einops.rearrange(tensor=mask,
-                                pattern='num_classes batch height width -> batch height width num_classes')
-        return mask
-
-    # def _add_label_channels(self, mask):
-    #     """Adds label channels to the mask."""
-    #     if mask.shape[-1] > 1:
-    #         return mask
-    #     mask = tf.cast(mask, dtype=tf.int32)
-    #
-    #     stack_list = []
-    #
-    #     # Create individual tensor array for each class. Each tensor would display the area on the original
-    #     # mask that is occupied by individual classes. if we have three class - background, pea, and outline,
-    #     # we would have three tensor arrays.
-    #     for intensity in tf.range(self.num_classes):
-    #         # Produce a temporary mask depicting all the pixel locations on the original tensor named 'mask'
-    #         # that have the same pixel intensity as  the integer 'class_index'. we want to
-    #         temp_mask = tf.equal(mask[..., 0], tf.constant(intensity, dtype=tf.int32))
-    #         # add each temporary mask to the stack_list.
-    #         stack_list.append(tf.cast(temp_mask, dtype=tf.float32))
-    #
-    #     # stack all the temporary masks within the stack_list, so together they form the third axis of the
-    #     # overall mask. Hence, the overall mask would be of dimension [height, width, number_of_classes]
-    #     mask = tf.stack(stack_list, axis=-1)  # Axis starts from 0, so axis of 2 represents the third axis
-    #     return mask
-    #
+        Returns:
+            Float32 tensor of shape [B, H, W, C] if one-hot encoding is applied,
+            otherwise the input tensor cast to float32.
+        """
+        return self._add_label_channels(mask=inputs)
 
     def _add_label_channels(self, mask):
         """
-        Adds label channels (one-hot encoding) to a batched 3D or 4D mask tensor.
-        Input shape: (B, H, W) or (B, H, W, 1)
-        Output shape: (B, H, W, C)
+        Converts a segmentation mask from integer indices to one-hot encoding.
+
+        Returns:
+            A float32 tensor with shape [B, H, W, num_classes], or the original tensor
+            if one-hot encoding is not applicable.
         """
+        if mask.shape.rank < 3:
+            return tf.cast(mask, tf.float32)
+
         mask = tf.cast(mask, tf.int32)
 
-        # Skip if already one-hot encoded (if it already has label channels/axis)
         if mask.shape.rank == 4 and mask.shape[-1] == self.num_classes:
             return tf.cast(mask, tf.float32)
 
-        # One-hot encode: (B, H, W) → (B, H, W, C)
+        if mask.shape[-1] == 1:
+            mask = tf.squeeze(mask, axis=-1)
+
         one_hot = tf.one_hot(mask, depth=self.num_classes, axis=-1, dtype=tf.float32)
         return one_hot
 
