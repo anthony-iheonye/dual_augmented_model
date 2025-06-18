@@ -2461,3 +2461,198 @@ class RandomContrast(AugmentationLayer):
                        })
         return config
 
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomCrop')
+class RandomCrop(AugmentationLayer):
+    """
+    A preprocessing layer that randomly crops images and segmentation masks during training.
+
+    This layer selects a random region of the input image and crops it to a specified zoom level.
+    If used with segmentation masks, the masks will be cropped using the same region as the image.
+
+    During inference or if the layer is inactive, it acts as a no-op (i.e., passes data through unchanged).
+
+    Inputs:
+        A dictionary containing:
+            - 'images': 3D (unbatched) or 4D (batched) tensor in `"channels_last"` format
+            - 'targets': 3D, 4D, 2D, or 1D tensor
+
+    Outputs:
+        A dictionary with:
+            - 'images': Cropped image tensor
+            - 'targets': Cropped target tensor, or unchanged if shape is not compatible
+
+        All outputs maintain `"channels_last"` format.
+
+    Fill modes (used for padding if needed):
+        - *reflect*: `(d c b a | a b c d | d c b a)` The input is extended by reflecting about the edge of the last pixel.
+        - *constant*: `(k k k k | a b c d | k k k k)` The input is extended by filling all values beyond the edge with the same constant value k = 0.
+        - *wrap*: `(a b c d | a b c d | a b c d)` The input is extended by wrapping around to the opposite edge.
+        - *nearest*: `(a a a a | a b c d | d d d d)` The input is extended by the nearest pixel.
+
+    Example:
+        >>> layer = RandomCrop(zoom_factor=(20, 50))
+        >>> img = tf.random.uniform((1, 224, 224, 3))
+        >>> mask = tf.random.uniform((1, 224, 224, 1))
+        >>> result = layer({'images': img, 'targets': mask}, training=True)
+        >>> result['images'].shape
+        TensorShape([1, target_height, target_width, 3])
+
+    Arguments:
+        :param zoom_factor: Float or tuple/list of two floats. Must be in range [1, 100].
+            Represents the percentage (relative to original size) to which the image will be cropped.
+            For example, a zoom_factor of (20, 50) will crop a region sized between 20% and 50% of the original.
+        :param active: Boolean flag to indicate whether the layer is active during training. Defaults to True.
+        :param image_key: String key to access the image tensor from the input dictionary. Default is `'images'`.
+        :param target_key: String key to access the target (e.g., mask) tensor from the input dictionary. Default is `'targets'`.
+        :param name: Name of the layer.
+        :param kwargs: Additional keyword arguments passed to the base `AugmentationLayer`.
+
+    Raises:
+        ValueError: If zoom_factor has invalid structure or values outside the allowed range.
+        TypeError: If zoom_factor is not a float, int, list, or tuple.
+    """
+
+    def __init__(self,
+                 zoom_factor: Union[float, List[float], Tuple[float, float]] = (20, 50),
+                 active: bool = True,
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 batches_before_aug: Optional[int] = None,
+                 name='random_crop',
+                 **kwargs):
+
+        super().__init__(name=name,
+                         image_key=image_key,
+                         target_key=target_key,
+                         active=active,
+                         batches_before_aug=batches_before_aug,
+                         **kwargs
+                         )
+        self.zoom_factor = zoom_factor
+
+        check_input(inputs=zoom_factor, name='zoom factor', input_range=(1, 100))
+
+        if isinstance(zoom_factor, (int, float)):
+            self.min_factor = self.max_factor = zoom_factor
+        elif isinstance(zoom_factor, (list, tuple)):
+            if len(zoom_factor) != 2:
+                raise ValueError(
+                    f"The {type(zoom_factor).__name__} `zoom_factor` must have only two values, got {zoom_factor}")
+
+            self.min_factor = zoom_factor[0]
+            self.max_factor = zoom_factor[1]
+        else:
+            raise TypeError(
+                f"The zoom_factor must be a list, tuple, int or float. Got {zoom_factor} of type `{type(zoom_factor).__name__}`"
+            )
+
+        if self.max_factor < self.min_factor:
+            raise ValueError(
+                "The upper boundary cannot be less than the lower boundary. Got angle = {}".format(zoom_factor)
+            )
+        if self.min_factor < 0:
+            raise ValueError(f"Zoom factors must be positive values. Got {zoom_factor}")
+
+    def _compute_crop_percent(self):
+        return tf.random.uniform(shape=[],
+                                 minval=self.min_factor / 100.0,
+                                 maxval=self.max_factor / 100.0,
+                                 dtype=tf.float32)
+
+    def get_random_transformation(self, image=None, label=None, bounding_box=None):
+        batch_shape = tf.shape(image)
+        original_height = batch_shape[H_AXIS]
+        original_width = batch_shape[W_AXIS]
+
+        crop_percent = self._compute_crop_percent()
+        target_height = tf.cast(tf.cast(original_height, tf.float32) * crop_percent, tf.int32)
+        target_width = tf.cast(tf.cast(original_width, tf.float32) * crop_percent, tf.int32)
+
+        # compute the offset height and width
+        dtype = image.dtype
+        rands = self._random_generator.random_uniform(shape=[2],
+                                                      minval=0,
+                                                      maxval=tf.int32.max,
+                                                      dtype=tf.int32)
+        h_diff = original_height - target_height
+        w_diff = original_width - target_width
+
+        offset_height = rands[0] % tf.maximum(h_diff + 1, 1)
+        offset_width = rands[1] % tf.maximum(w_diff + 1, 1)
+        return {
+            'offset_height': offset_height,
+            'offset_width': offset_width,
+            'target_height': target_height,
+            'target_width': target_width,
+            'original_height': original_height,
+            'original_width': original_width,
+        }
+
+    def augment_image(self, image, transformation):
+        cropped = tf.image.crop_to_bounding_box(
+            image=image,
+            offset_height=transformation['offset_height'],
+            offset_width=transformation['offset_width'],
+            target_height=transformation['target_height'],
+            target_width=transformation['target_width']
+        )
+
+        resized = tf.image.resize(
+            images=cropped,
+            size=[transformation['original_height'], transformation['original_width']],
+            method=tf.image.ResizeMethod.BILINEAR
+        )
+        return resized
+
+    def augment_label(self, label, transformation):
+        cropped = tf.image.crop_to_bounding_box(
+            image=label,
+            offset_height=transformation['offset_height'],
+            offset_width=transformation['offset_width'],
+            target_height=transformation['target_height'],
+            target_width=transformation['target_width']
+        )
+
+        resized = tf.image.resize(
+            images=cropped,
+            size=[transformation['original_height'], transformation['original_width']],
+            method=tf.image.ResizeMethod.NEAREST_NEIGHBOR
+        )
+        return resized
+
+    def augment_bounding_boxes(self, image, bounding_boxes, transformation=None):
+        """
+        Adjust bounding boxes to reflect cropping and resizing.
+
+        :param image: Tensor of shape (B, H, W, C)
+        :param bounding_boxes: Tensor of shape (B, N, 4) with [x_min, y_min, x_max, y_max]
+        :param transformation: Dict with keys:
+            - offset_height, offset_width
+            - target_height, target_width
+            - original_height, original_width
+        :return: Adjusted bounding_boxes of shape (B, N, 4)
+        """
+        x_min, y_min, x_max, y_max = tf.split(bounding_boxes, 4, axis=-1)
+
+        # Cast and expand transformation tensors
+        offset_x = tf.cast(tf.expand_dims(transformation['offset_width'], axis=-1), bounding_boxes.dtype)  # (B, 1)
+        offset_y = tf.cast(tf.expand_dims(transformation['offset_height'], axis=-1), bounding_boxes.dtype)
+        crop_w = tf.cast(tf.expand_dims(transformation['target_width'], axis=-1), bounding_boxes.dtype)
+        crop_h = tf.cast(tf.expand_dims(transformation['target_height'], axis=-1), bounding_boxes.dtype)
+        orig_w = tf.cast(tf.expand_dims(transformation['original_width'], axis=-1), bounding_boxes.dtype)
+        orig_h = tf.cast(tf.expand_dims(transformation['original_height'], axis=-1), bounding_boxes.dtype)
+
+        # Adjust coordinates: shift by crop offset
+        x_min = (x_min - offset_x) / crop_w * orig_w
+        x_max = (x_max - offset_x) / crop_w * orig_w
+        y_min = (y_min - offset_y) / crop_h * orig_h
+        y_max = (y_max - offset_y) / crop_h * orig_h
+
+        # Recombine
+        return tf.concat([x_min, y_min, x_max, y_max], axis=-1)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({'zoom_factor': self.zoom_factor})
+        return config
