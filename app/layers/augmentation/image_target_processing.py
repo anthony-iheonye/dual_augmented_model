@@ -952,3 +952,123 @@ class RandomRotation(AugmentationLayer):
         return config
 
 
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomGaussianNoise')
+class RandomGaussianNoise(AugmentationLayer):
+    """
+    A preprocessing layer which randomly applies Gaussian noise to images during training.
+
+    This layer adds pixel-wise Gaussian noise to the input image tensor. The standard deviation
+    is sampled uniformly from a specified range. Noise is applied only during training when
+    `active=True`. During inference or when inactive, the layer behaves as a no-op: all inputs,
+    including images, targets, and bounding boxes, are returned unmodified.
+
+    Input shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 1D, 2D, 3D, or 4D tensor}
+
+        Image tensors must follow the shape `(..., height, width, channels)` using
+        the `"channels_last"` format. Targets can be any of the following:
+        - 1D: single class label
+        - 2D: single-channel binary mask
+        - 3D: multi-channel mask or label image
+        - 4D: batched masks or labels
+
+        Only the image is augmented; the target is passed through unchanged.
+
+    Output shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 1D, 2D, 3D, or 4D tensor}
+
+        Output shape and format are identical to input.
+
+    Arguments:
+      stddev: A float, list, or tuple representing the lower and upper bounds of the
+          standard deviation to use for sampling Gaussian noise. If a single float is provided,
+          it is treated as the upper bound with the lower bound defaulting to 0.0. Both values
+          must be ≥ 0.
+      name: The name assigned to the layer instance.
+      active: Boolean indicating whether this layer is active during training. If False,
+          the input is returned unchanged.
+      image_key: The key used to retrieve the image tensor from the input dictionary.
+      target_key: The key used to retrieve the mask or label tensor from the input dictionary.
+      bounding_box_key: The key used to retrieve bounding box data from the input dictionary.
+      kwargs: Additional keyword arguments passed to the base `AugmentationLayer`.
+
+    Raises:
+      TypeError: If `stddev` is not a float, int, list, or tuple.
+      ValueError: If `stddev` contains negative values or if the upper bound is less than the lower.
+    """
+
+    def __init__(self,
+                 stddev: Union[float, List[float], Tuple[float, float]] = (0.0, 3.0),
+                 name='random_gaussian_noise',
+                 active: bool = True,
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 batches_before_aug: Optional[int] = None,
+                 **kwargs):
+
+        base_preprocessing_layer.keras_kpl_gauge.get_cell("RandomDualGaussianNoise").set(True)
+
+        super().__init__(active=active,
+                         image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key,
+                         batches_before_aug=batches_before_aug,
+                         name=name,
+                         **kwargs)
+        self.stddev = stddev
+
+        if isinstance(stddev, (tuple, list)):
+            self.lower = stddev[0]
+            self.upper = stddev[1]
+        elif isinstance(stddev, (int, float)):
+            self.lower = 0.0
+            self.upper = stddev
+        else:
+            raise TypeError(
+                "Allowed datatypes  for stddev: tuple, list, int, "
+                "float. Receive {} of type - {}.".format(stddev, type(stddev).__name__))
+
+        if self.lower < 0 or self.upper < 0:
+            raise ValueError("stddev must be greater than 0, got {}".format(stddev))
+
+        if self.upper < self.lower:
+            raise ValueError(
+                "The upper limit of stddev must be greater than the lower limit. "
+                "{} is less than {}".format(self.upper, self.lower))
+
+    def get_random_transformation(self, image=None, label=None, bounding_box=None):
+
+        min_stddev = self.lower
+        max_stddev = self.upper
+        batch_size = tf.shape(image)[0]
+        stddev = tf.random.uniform(shape=[batch_size], minval=min_stddev, maxval=max_stddev)
+
+        # broadcast stddev to [batch_size, 1, 1, 1], the noise added to each image
+        # in the batch uses a different standard deviation.
+        stddev = tf.reshape(stddev, [-1, 1, 1, 1])
+        return {"stddev": stddev}
+
+    def augment_image(self, image, transformation):
+        image = utils.ensure_tensor(image, self.compute_dtype)
+        stddev = transformation["stddev"]
+
+        output = image + tf.random.normal(shape=tf.shape(image),
+                                          mean=0.0,
+                                          stddev=stddev,
+                                          dtype=image.dtype, )
+
+        return output
+
+    def augment_label(self, label, transformation):
+        return label
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"stddev": self.stddev, })
+        return config
