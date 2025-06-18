@@ -2321,3 +2321,143 @@ class RandomBrightness(AugmentationLayer):
                        })
         return config
 
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomContrast')
+class RandomContrast(AugmentationLayer):
+    """
+    A preprocessing layer that randomly adjusts the contrast of images during training.
+
+    This layer performs contrast adjustment independently per channel. For each channel,
+    it computes the mean pixel value and adjusts every pixel using the formula:
+        `(x - mean) * contrast_factor + mean`.
+
+    Contrast adjustment helps the model generalize to variations in lighting and exposure.
+    At inference time, the layer is a no-op and passes inputs unchanged.
+
+    Inputs:
+        A dictionary containing:
+            - 'images': 3D (unbatched) or 4D (batched) tensor in `"channels_last"` format
+            - 'targets': 3D (unbatched), 4D (batched), 2D, or 1D tensor
+
+    Outputs:
+        A dictionary with the same structure:
+            - 'images': Tensor with adjusted contrast, clipped to `image_intensity_range`
+            - 'targets': Unchanged
+
+    Example:
+        >>> layer = RandomContrast(factor=(0.2, 0.8), image_intensity_range=(0.0, 255.0))
+        >>> img = tf.random.uniform((1, 128, 128, 3))
+        >>> mask = tf.random.uniform((1, 128, 128, 1))
+        >>> result = layer({'images': img, 'targets': mask}, training=True)
+        >>> result['images'].shape
+        TensorShape([1, 128, 128, 3])
+
+    Arguments:
+        :param factor: A positive float, or a tuple/list of two floats. Values should be in the range `[0.1, 1.0]`.
+            If a single float is provided, it is treated as both the lower and upper bound.
+            The contrast factor is randomly sampled from `[1.0 - factor, 1.0 + factor]`.
+        :param active: If False, the layer performs no augmentation and passes inputs unchanged.
+        :param seed: Optional random seed for reproducibility.
+        :param image_intensity_range: Tuple or list of two floats, specifying the minimum and maximum pixel intensity.
+            Example: `[0.0, 1.0]` for normalized inputs or `[0.0, 255.0]` for raw RGB inputs.
+        :param image_key: Dictionary key for image tensors. Default is `'images'`.
+        :param target_key: Dictionary key for target tensors. Default is `'targets'`.
+        :param bounding_box_key: Dictionary key for bounding boxes. Default is `'bounding_boxes'`.
+        :param name: Name of the layer.
+        :param kwargs: Additional keyword arguments for the base layer.
+
+    Raises:
+        ValueError: If `factor` is outside the allowed range `[0.1, 1.0]`.
+        TypeError: If `factor` is not a float, list, or tuple.
+    """
+
+    _VALUE_RANGE_VALIDATION_ERROR = (
+        "The `value_range` argument should be a tuple of two numbers. ")
+
+    def __init__(self,
+                 factor: Union[float, List[float], Tuple[float, float]] = (0.1, 1.0),
+                 active: bool = True,
+                 seed: int = None,
+                 image_intensity_range=(0.0, 255.0),
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 batches_before_aug: Optional[int] = None,
+                 name='random_contrast',
+                 **kwargs):
+        super().__init__(active=active,
+                         seed=seed,
+                         image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key,
+                         batches_before_aug=batches_before_aug,
+                         name=name,
+                         **kwargs)
+
+        base_preprocessing_layer.keras_kpl_gauge.get_cell("RandomDualContrast").set(True)
+        self.factor = factor
+        self.value_range = image_intensity_range
+
+        self._set_factor(factor)
+        self._set_value_range(image_intensity_range)
+
+    def _set_value_range(self, value_range):
+        if not isinstance(value_range, (tuple, list)):
+            raise ValueError(
+                self._VALUE_RANGE_VALIDATION_ERROR + f"Got {value_range}")
+
+        if len(value_range) != 2:
+            raise ValueError(
+                self._VALUE_RANGE_VALIDATION_ERROR + f"Got {value_range}")
+
+        self._value_range = sorted(value_range)
+
+    def _set_factor(self, factor):
+        if isinstance(factor, (tuple, list)):
+            self.lower = factor[0]
+            self.upper = factor[1]
+        else:
+            self.lower = self.upper = factor
+        if self.lower < 0.0 or self.upper < 0.0 or self.lower > 1.0:
+            raise ValueError(
+                "Factor cannot have negative values or be greater than 1.0,"
+                " got {}".format(factor))
+
+    def augment_image(self, image, transformation):
+
+        def random_contrasted_inputs(inputs):
+            seed = self._random_generator.make_seed_for_stateless_op()
+            if seed is not None:
+                output = tf.image.stateless_random_contrast(
+                    image=inputs,
+                    lower=1.0 - self.lower,
+                    upper=1.0 + self.upper,
+                    seed=seed
+                )
+            else:
+                output = tf.image.random_contrast(
+                    image=inputs,
+                    lower=1.0 - self.lower,
+                    upper=1.0 + self.upper,
+                    seed=self._random_generator.make_legacy_seed()
+                )
+            output = tf.clip_by_value(t=output,
+                                      clip_value_min=self._value_range[0],
+                                      clip_value_max=self._value_range[1])
+            return output
+
+        return random_contrasted_inputs(image)
+
+    def augment_label(self, label, transformation):
+        return label
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"factor": self.factor,
+                       "image_intensity_range": self.value_range,
+                       })
+        return config
+
