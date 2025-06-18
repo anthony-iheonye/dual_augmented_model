@@ -2166,3 +2166,158 @@ class RandomJitter(AugmentationLayer):
         config = super().get_config()
         config.update({"jitter_range": self.jitter_range})
         return config
+
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomBrightness')
+class RandomBrightness(AugmentationLayer):
+    """
+    A preprocessing layer that randomly adjusts the brightness of input images during training.
+
+    This layer applies a random brightness shift to each image in the batch by adding an offset
+    proportional to the input intensity range. A different brightness factor is sampled for each image.
+    At inference time, the layer behaves as a no-op.
+
+    Input shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 3D (unbatched), 4D (batched), 2D, or 1D tensor}
+
+        Both `images` and `targets` should follow `(..., height, width, channels)` format,
+        using `"channels_last"` convention.
+
+    Output shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 3D (unbatched), 4D (batched), 2D, or 1D tensor}
+
+        Only the `images` tensor is modified. Brightness is adjusted and clipped to the provided
+        `image_intensity_range`. `targets` are passed through unchanged.
+
+    Example:
+        >>> layer = RandomBrightness(factor=(0.1, 0.5), image_intensity_range=(0.0, 255.0))
+        >>> img = tf.random.uniform((2, 128, 128, 3))  # Batch of RGB images
+        >>> mask = tf.random.uniform((2, 128, 128, 1)) # Corresponding masks
+        >>> output = layer({'images': img, 'targets': mask}, training=True)
+        >>> output['images'].shape
+        TensorShape([2, 128, 128, 3])
+
+    Arguments:
+        factor: A float, or tuple/list of two floats, in the range `[0.1, 2.0]`.
+            - Values above 1.0 brighten the image; values below 1.0 darken it.
+            - If a single float is provided, brightness factor will be sampled from `[1.0 - factor, 1.0 + factor]`.
+            - If a tuple/list is provided, the factor is sampled from `[factor[0], factor[1]]`.
+        image_intensity_range: A tuple or list specifying the lower and upper bounds of pixel values (e.g., `[0, 1]` or `[0, 255]`).
+            - The brightness offset is computed relative to this range.
+            - Output is clipped to stay within this range after transformation.
+        image_key: Dictionary key used to access the image tensor. Default is `'images'`.
+        target_key: Dictionary key used to access the target tensor. Default is `'targets'`.
+        bounding_box_key: Dictionary key used to access the bounding box tensor. Default is `'bounding_boxes'`.
+        name: Name of the layer instance.
+        kwargs: Additional keyword arguments passed to the base `AugmentationLayer`.
+
+    Raises:
+        ValueError: If `factor` is outside `[0.1, 2.0]`, or if `image_intensity_range` is invalid.
+        TypeError: If `factor` is not a float, tuple, or list.
+    """
+
+    _FACTOR_VALIDATION_ERROR = (
+        "The `factor` argument should be a number (or a list of two numbers) "
+        "in the range [-1.0, 1.0]. ")
+
+    _VALUE_RANGE_VALIDATION_ERROR = (
+        "The `image_intensity_range` argument should be a tuple of two numbers. ")
+
+    def __init__(self,
+                 factor: Union[float, List, Tuple] = (0.1, 0.5),
+                 image_intensity_range=(0.0, 255.0),
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 batches_before_aug: Optional[int] = None,
+                 name: str = 'random_brightness',
+                 **kwargs):
+        base_preprocessing_layer.keras_kpl_gauge.get_cell("RandomDualBrightness").set(True)
+        super().__init__(image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key,
+                         batches_before_aug=batches_before_aug,
+                         name=name,
+                         **kwargs)
+
+        # check if factor is outside the acceptable range
+        check_input(factor, name='factor', input_range=(0.10, 2.0))
+
+        # convert the custom input factor to be within the tensorflow range
+        factor = interpolate_to_tensorflow_value(
+            custom_value=factor,
+            custom_datapoints=[-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
+            tensorflow_datapoints=[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0])
+
+        self.image_intensity_range = image_intensity_range
+        self._set_factor(factor)
+        self._set_value_range(image_intensity_range)
+
+    def get_random_transformation(self, image=None, label=None, bounding_box=None):
+
+        batch_size = tf.shape(image)[0]
+        rgb_delta_shape = [batch_size, 1, 1, 1]
+
+        random_rgb_delta = tf.random.uniform(
+            shape=rgb_delta_shape,
+            minval=self._factor[0],
+            maxval=self._factor[1])
+
+        random_rgb_delta = random_rgb_delta * (self._value_range[1] - self._value_range[0])
+        random_rgb_delta = tf.cast(random_rgb_delta, dtype=image.dtype)
+        return {"rgb_delta": random_rgb_delta}
+
+    def augment_image(self, image, transformation):
+        rgb_delta = transformation['rgb_delta']
+
+        image = tf.math.add(image, rgb_delta)
+        return tf.clip_by_value(t=image,
+                                clip_value_min=self._value_range[0],
+                                clip_value_max=self._value_range[1])
+
+    def augment_label(self, label, transformation):
+        return label
+
+    def _set_value_range(self, value_range):
+        if not isinstance(value_range, (tuple, list)):
+            raise ValueError(
+                self._VALUE_RANGE_VALIDATION_ERROR + f"Got {value_range}")
+
+        if len(value_range) != 2:
+            raise ValueError(
+                self._VALUE_RANGE_VALIDATION_ERROR + f"Got {value_range}")
+
+        self._value_range = sorted(value_range)
+
+    def _set_factor(self, factor):
+
+        if isinstance(factor, (tuple, list)):
+            if len(factor) != 2:
+                raise ValueError(
+                    self._FACTOR_VALIDATION_ERROR + f"Got {factor}"
+                )
+            self._check_factor_range(factor[0])
+            self._check_factor_range(factor[1])
+            self._factor = sorted(factor)
+        elif isinstance(factor, (int, float)):
+            self._check_factor_range(factor)
+            factor = abs(factor)
+            self._factor = [-factor, factor]
+        else:
+            raise ValueError(self._FACTOR_VALIDATION_ERROR + f"Got {factor}")
+
+    def _check_factor_range(self, input_number):
+        if input_number > 1.0 or input_number < -1.0:
+            raise ValueError(
+                self._FACTOR_VALIDATION_ERROR + f"Got {input_number}"
+            )
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"factor": self._factor,
+                       "image_intensity_range": self.image_intensity_range,
+                       })
+        return config
+
