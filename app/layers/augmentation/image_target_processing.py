@@ -1967,3 +1967,202 @@ class AffineTransform(AugmentationLayer):
                        })
 
         return config
+
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomJitter')
+class RandomJitter(AugmentationLayer):
+    """
+    A preprocessing layer that applies random **spatial jitter** to images and their corresponding
+    segmentation masks during training.
+
+    This layer simulates small camera shifts or object displacements by padding the image and then
+    cropping a randomly shifted region of the original size. It does not modify individual pixel
+    intensities (i.e., not pixel-level jitter).
+
+    Jitter is only applied during training. During inference, the input is returned unchanged.
+
+    ---
+    Input:
+        A dictionary with keys:
+            - 'images': Tensor of shape 3D or 4D (`[H, W, C]` or `[B, H, W, C]`), dtype float or int
+            - 'targets': Tensor of shape 3D or 4D. If target is 1D or 2D, it is passed through unchanged.
+
+    Output:
+        A dictionary with the same keys and shapes as input. Spatially jittered versions of input tensors.
+
+    ---
+    Example:
+        >>> jitter = RandomJitter(jitter_range=(5, 10))
+        >>> images = tf.random.uniform((4, 224, 224, 3))
+        >>> masks = tf.random.uniform((4, 224, 224, 1))
+        >>> output = jitter({'images': images, 'targets': masks}, training=True)
+        >>> output['images'].shape
+        TensorShape([4, 224, 224, 3])
+
+    ---
+    Args:
+        jitter_range: Tuple of 2 integers specifying min and max spatial offset in pixels.
+                      A random offset is sampled in [min, max] for height and width.
+                      - Range allowed: (0, 60)
+                      - Example: (5, 15) allows up to 15-pixel shifts
+
+        fill_mode: Pixel fill method for padded areas. One of:
+                   - "constant": Pads with `fill_value`
+                   - "reflect": Reflects image border
+                   - "wrap": Wraps image content
+                   - "nearest": Replicates nearest pixels
+
+        interpolation: Interpolation method when cropping. One of: "nearest", "bilinear"
+
+        fill_value: Value to use for padding if `fill_mode="constant"`
+
+        image_key: Key to access image tensor in the input dictionary (default: "images")
+
+        target_key: Key to access mask/label tensor in the input dictionary (default: "targets")
+
+        bounding_box_key: Optional key to access bounding boxes (default: "bounding_boxes")
+
+        name: Name of the layer.
+
+        kwargs: Additional keyword arguments passed to base layer.
+
+    ---
+    Raises:
+        TypeError: If `jitter_range` is not a list or tuple of two integers.
+        ValueError: If `jitter_range[1]` is less than `jitter_range[0]`.
+    """
+
+    def __init__(self,
+                 jitter_range: Union[List[int], Tuple[int, int]] = (0, 60),
+                 name: str = 'random_jitter',
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 batches_before_aug: Optional[int] = None,
+                 **kwargs):
+        base_preprocessing_layer.keras_kpl_gauge.get_cell("RandomDualJitter").set(True)
+
+        super().__init__(name=name,
+                         image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key,
+                         batches_before_aug=batches_before_aug,
+                         **kwargs)
+
+        self.jitter_range = jitter_range
+
+        check_input(inputs=jitter_range, name='jitter_range', input_range=(0, 60))
+
+        if isinstance(jitter_range, (tuple, list)):
+            self.lower = jitter_range[0]
+            self.upper = jitter_range[1]
+        else:
+            raise TypeError(
+                "The jitter_range must be a list or tuple tuple. Got {} of type {}".format(jitter_range,
+                                                                                           type(jitter_range))
+            )
+        if not all(isinstance(value, int) for value in (self.lower, self.upper)):
+            raise TypeError(
+                "The min and max values within the jitter_range must be integer, "
+                "got {}: [{}, {}]".format(jitter_range, type(self.lower), type(self.upper))
+            )
+        if self.upper < self.lower:
+            raise ValueError(
+                "The upper boundary cannot be less than the lower boundary. Got jitter_range = {}".format(jitter_range)
+            )
+
+    def get_random_transformation(self, image=None, label=None, bounding_box=None):
+        batch_size = tf.shape(image)[0]
+
+        jitter_h = tf.random.uniform(shape=[batch_size], minval=self.lower,
+                                     maxval=self.upper + 1, dtype=tf.int32)
+
+        jitter_w = tf.random.uniform(shape=[batch_size], minval=self.lower,
+                                     maxval=self.upper + 1, dtype=tf.int32)
+
+        return {"jitter_h": jitter_h,
+                "jitter_w": jitter_w}
+
+    def _resize_image(self, image, jitter_h, jitter_w):
+        image = tf.convert_to_tensor(image)
+        height = tf.shape(image)[0]
+        width = tf.shape(image)[1]
+
+        # Pad to max size
+        max_width = width + self.upper
+        max_height = height + self.upper
+        padded = tf.image.resize_with_crop_or_pad(image, max_height, max_width)
+
+        # Crop the jittered region
+        cropped = tf.image.crop_to_bounding_box(
+            padded,
+            offset_height=jitter_h,
+            offset_width=jitter_w,
+            target_height=height,
+            target_width=width
+        )
+        return cropped
+
+    def augment_image(self, image, transformation):
+        image = utils.ensure_tensor(image, self.compute_dtype)
+        jitter_h = transformation['jitter_h']
+        jitter_w = transformation['jitter_w']
+
+        def apply_jitter(inputs):
+            img, jh, jw = inputs
+            return self._resize_image(image=img, jitter_h=jh, jitter_w=jw)
+
+        output = tf.map_fn(fn=apply_jitter,
+                           elems=(image, jitter_h, jitter_w),
+                           fn_output_signature=tf.TensorSpec(shape=image.shape[1:],
+                                                             dtype=image.dtype))
+
+        return output
+
+    def augment_label(self, label, transformation):
+        label = utils.ensure_tensor(label, self.compute_dtype)
+        jitter_h = transformation['jitter_h']
+        jitter_w = transformation['jitter_w']
+
+        def apply_jitter(inputs):
+            lbl, jh, jw = inputs
+            return self._resize_image(image=lbl, jitter_h=jh, jitter_w=jw)
+
+        output = tf.map_fn(fn=apply_jitter,
+                           elems=(label, jitter_h, jitter_w),
+                           fn_output_signature=tf.TensorSpec(shape=label.shape[1:],
+                                                             dtype=label.dtype))
+
+        return output
+
+    def augment_bounding_boxes(self, image, bounding_boxes, transformation=None):
+        """
+        Shift bounding boxes according to the jitter offsets.
+
+        :param image: Batched image tensor, used to determine batch size
+        :param bounding_boxes: Tensor of shape (B, N, 4)
+        :param transformation: Dict containing 'jitter_h' and 'jitter_w' of shape (B,)
+        :return: Tensor of shape (B, N, 4) with adjusted coordinates
+        """
+        bbox_dtype = bounding_boxes.dtype
+        jitter_h = tf.cast(tf.expand_dims(transformation["jitter_h"], axis=1), bbox_dtype)  # (B, 1)
+        jitter_w = tf.cast(tf.expand_dims(transformation["jitter_w"], axis=1), bbox_dtype)  # (B, 1)
+
+        # Broadcast to match number of bboxes per image
+        jitter_shift = tf.concat([jitter_w, jitter_h, jitter_w, jitter_h], axis=-1)  # (B, 4)
+
+        # If bounding_boxes has shape (B, N, 4), tile jitter to match (B, N, 4)
+        jitter_shift = tf.expand_dims(jitter_shift, axis=1)  # (B, 1, 4)
+        jitter_shift = tf.broadcast_to(jitter_shift, tf.shape(bounding_boxes))  # (B, N, 4)
+
+        # Subtract the shift from bounding box coordinates
+        adjusted_bboxes = bounding_boxes - jitter_shift
+        return adjusted_bboxes
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"jitter_range": self.jitter_range})
+        return config
