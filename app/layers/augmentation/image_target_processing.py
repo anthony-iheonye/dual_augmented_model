@@ -749,6 +749,206 @@ class AugmentationLayer(base_layer.BaseRandomLayer):
         return cls(**config)
 
 
+@keras.saving.register_keras_serializable(package='Augmentation', name='RandomRotation')
+class RandomRotation(AugmentationLayer):
+    """
+    A preprocessing layer which randomly rotates images during training.
 
+    This layer applies random rotations to each image and its segmentation mask (if available),
+    filling empty regions according to the specified `fill_mode` and `fill_value`. The rotation
+    angle is sampled uniformly from a specified range. At inference time or when `active=False`,
+    the layer behaves as a no-op, passing the input (image and label) through unchanged.
+
+    Input shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 3D (unbatched) or 4D (batched) tensor}
+
+        Image and target tensors must follow the shape `(..., height, width, channels)`
+        using the `"channels_last"` format.
+
+    Output shape:
+        {'images': 3D (unbatched) or 4D (batched) tensor,
+         'targets': 3D (unbatched) or 4D (batched) tensor}
+
+        Output shape and format are identical to input. NOTE: if the shape of the target is 2D,
+        it will not be augmented.
+
+    Arguments:
+      angle: A float, int, tuple, or list representing the angle by which the image and mask
+         will be rotated. If a single value (int or float) is provided, the rotation range is
+         between [-angle, angle]. If a tuple or list of two values is provided, the angle is
+         sampled between (angle[0], angle[1]).
+      active: Boolean indicating whether to apply augmentation during training. If False,
+         inputs are returned unchanged.
+      fill_mode: Points outside the boundaries of the input are filled according to this mode.
+         One of: `{"constant", "reflect", "wrap", "nearest"}`.
+
+         - *reflect*: `(d c b a | a b c d | d c b a)` — reflects about the edge of the last pixel.
+         - *constant*: `(k k k k | a b c d | k k k k)` — fills with constant value `k` (default 0).
+         - *wrap*: `(a b c d | a b c d | a b c d)` — wraps around to the opposite edge.
+         - *nearest*: `(a a a a | a b c d | d d d d)` — extends using nearest edge pixel.
+      interpolation: Interpolation mode used during resampling. Supported values: `"nearest"`, `"bilinear"`.
+      fill_value: A float representing the pixel value used to fill empty regions when `fill_mode="constant"`.
+      image_key: The key used to retrieve the image tensor from the input dictionary.
+      target_key: The key used to retrieve the mask or label tensor from the input dictionary.
+      bounding_box_key: The key used to retrieve bounding box data from the input dictionary.
+      name: The name of the layer instance.
+
+    Raises:
+      TypeError: If `angle` is not a float, int, list, or tuple.
+      ValueError: If `angle` is a list or tuple not of length 2, or if the upper angle is less than the lower.
+    """
+
+    def __init__(self,
+                 angle: Union[int, float, List[int], Tuple[int, int]] = 180,
+                 active: bool = True,
+                 fill_mode="reflect",
+                 interpolation="bilinear",
+                 fill_value=0.0,
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 batches_before_aug: Optional[int] = None,
+                 name: str = 'random_rotation',
+                 **kwargs):
+
+        super().__init__(active=active,
+                         image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key,
+                         batches_before_aug=batches_before_aug,
+                         name=name,
+                         **kwargs)
+        self.angle = angle
+        if isinstance(angle, (tuple, list)):
+            if len(angle) != 2:
+                raise ValueError(f"The {type(angle).__name__} `angle` must have only two values, got {angle}")
+            self.lower = np.deg2rad(angle[0])
+            self.upper = np.deg2rad(angle[1])
+
+        elif isinstance(angle, (int, float)):
+            self.lower = np.deg2rad(-angle)
+            self.upper = np.deg2rad(angle)
+        else:
+            raise TypeError(
+                f"The angle must be a list, tuple, int or float. Got {angle} of type `{type(angle).__name__}`"
+            )
+
+        if self.upper < self.lower:
+            raise ValueError(
+                "The upper boundary cannot be less than the lower boundary. Got angle = {}".format(angle)
+            )
+
+        check_fill_mode_and_interpolation(fill_mode, interpolation)
+        self.fill_mode = fill_mode
+        self.fill_value = fill_value
+        self.interpolation = interpolation
+
+    def get_random_transformation(self, image=None, label=None, bounding_box=None):
+        # min_angle = self.lower * 2.0 * np.pi
+        # max_angle = self.upper * 2.0 * np.pi
+        batch_size = tf.shape(image)[0]
+        angles = tf.random.uniform(shape=[batch_size], minval=self.lower, maxval=self.upper)
+
+        # # 50% chance to apply rotation: mask = 1 if apply, 0 if skip
+        # apply_mask = tf.cast(tf.random.uniform(shape=[batch_size], minval=0, maxval=1) < 0.5,
+        #                      dtype=angles.dtype)
+        #
+        # # Zero out angles for samples where augmentation should be skipped
+        # angles = angles * apply_mask
+
+        return {"angles": angles}
+
+    def augment_image(self, image, transformation):
+        image = utils.ensure_tensor(image, self.compute_dtype)
+        image_shape = tf.shape(image)
+
+        img_hd = tf.cast(image_shape[H_AXIS], tf.float32)
+        img_wd = tf.cast(image_shape[W_AXIS], tf.float32)
+
+        angle = transformation["angles"]
+
+        output = transform(images=image,
+                           transforms=get_rotation_matrix(angle, img_hd, img_wd),
+                           fill_mode=self.fill_mode,
+                           fill_value=self.fill_value,
+                           interpolation=self.interpolation,
+                           )
+        return output
+
+    def augment_label(self, label, transformation):
+        label = utils.ensure_tensor(label, self.compute_dtype)
+        image_shape = tf.shape(label)
+
+        label_hd = tf.cast(image_shape[H_AXIS], tf.float32)
+        label_wd = tf.cast(image_shape[W_AXIS], tf.float32)
+
+        angles = transformation["angles"]
+        output = transform(label,
+                           get_rotation_matrix(angles, label_hd, label_wd),
+                           fill_mode=self.fill_mode,
+                           fill_value=self.fill_value,
+                           interpolation='nearest',
+                           )
+        return output
+
+    def augment_bounding_boxes(self, images, bounding_boxes, transformation):
+        """
+        Applies rotation to bounding boxes for a batch of images.
+
+        :param images: 4D tensor of shape (B, H, W, C)
+        :param bounding_boxes: RaggedTensor of shape (B, None, 4), each row is [x_min, y_min, x_max, y_max]
+        :param transformation: Dictionary containing 'angles': 1D tensor of shape (B,)
+        :return: RaggedTensor of shape (B, None, 4) with updated bounding boxes
+        """
+        angles = -transformation["angles"]  # Clockwise for TF transform
+        batch_size = tf.shape(images)[0]
+        image_shapes = tf.shape(images)
+
+        def rotate_boxes_per_image(args):
+            boxes, angle, img = args
+            h = tf.cast(tf.shape(img)[H_AXIS], tf.float32)
+            w = tf.cast(tf.shape(img)[W_AXIS], tf.float32)
+            cx, cy = w / 2.0, h / 2.0
+
+            x1, y1, x2, y2 = tf.split(boxes, 4, axis=1)
+            corners = tf.concat([
+                tf.stack([x1, y1], axis=2),
+                tf.stack([x2, y1], axis=2),
+                tf.stack([x2, y2], axis=2),
+                tf.stack([x1, y2], axis=2)
+            ], axis=1)  # shape (N, 4, 2)
+
+            translated = corners - tf.constant([[cx, cy]], dtype=tf.float32)
+
+            cos_theta = tf.cos(angle)
+            sin_theta = tf.sin(angle)
+            rot_matrix = tf.convert_to_tensor([[cos_theta, -sin_theta], [sin_theta, cos_theta]], dtype=tf.float32)
+
+            rotated = tf.einsum('nij,jk->nik', translated, rot_matrix) + tf.constant([[cx, cy]], dtype=tf.float32)
+
+            min_coords = tf.reduce_min(rotated, axis=1)
+            max_coords = tf.reduce_max(rotated, axis=1)
+            return tf.concat([min_coords, max_coords], axis=1)
+
+        batched_outputs = tf.map_fn(
+            fn=rotate_boxes_per_image,
+            elems=(bounding_boxes, angles, images),
+            fn_output_signature=tf.TensorSpec(shape=(None, 4), dtype=tf.float32)
+        )
+
+        return batched_outputs
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"angle": self.angle,
+                       "fill_mode": self.fill_mode,
+                       "interpolation": self.interpolation,
+                       "fill_value": self.fill_value})
+
+        return config
 
 
