@@ -1352,6 +1352,7 @@ class RandomShear(AugmentationLayer):
 
 @keras.saving.register_keras_serializable(package='Augmentation', name='RandomZoom')
 class RandomZoom(AugmentationLayer):
+
     """
     A preprocessing layer which randomly zooms images and their segmentation masks during training.
 
@@ -1533,7 +1534,7 @@ class RandomZoom(AugmentationLayer):
 
         # Get zoom factors
         zoom_h = tf.reshape(transformation["height_zoom"], [-1, 1, 1])  # (B, 1, 1)
-        zoom_w = tf.reshape(transformation["width_zoom"], [-1, 1, 1])  # (B, 1, 1)
+        zoom_w = tf.reshape(transformation["width_zoom"], [-1, 1, 1])   # (B, 1, 1)
 
         # Compute center of image (B, 1)
         center_x = width / 2.0
@@ -1573,17 +1574,18 @@ class RandomZoom(AugmentationLayer):
         config = super().get_config()
         config.update(
             {
-                "height_factor": self.height_factor,
-                "width_factor": self.width_factor,
-                "fill_mode": self.fill_mode,
-                "fill_value": self.fill_value,
-                "interpolation": self.interpolation,
-            })
+            "height_factor": self.height_factor,
+            "width_factor": self.width_factor,
+            "fill_mode": self.fill_mode,
+            "fill_value": self.fill_value,
+            "interpolation": self.interpolation,
+        })
         return config
 
 
 @keras.saving.register_keras_serializable(package='Augmentation', name='AffineTransform')
 class AffineTransform(AugmentationLayer):
+
     """
     A preprocessing layer that applies affine transformations—rotation, shear, and zoom—
     to images and, if provided, their segmentation masks and bounding boxes.
@@ -1613,14 +1615,14 @@ class AffineTransform(AugmentationLayer):
          - If tuple/list: sampled from [theta[0], theta[1]]
       shear: Boolean indicating whether to apply random shear during training.
       shear_angle: A float, list, or tuple specifying the shear angle in degrees.
-         - Range: -20 to +20 recommended
+         - Range: -45 to +45
          - If scalar: sampled from [-shear_angle, +shear_angle]
          - If tuple/list: sampled from [shear_angle[0], shear_angle[1]]
       zoom: Boolean indicating whether to apply random zoom during training.
       zoom_factor: A float, int, tuple, or list specifying the zoom scale in percentage.
-         - Range: 1 to 200 (percent of original size)
-         - If scalar `x`: interpreted as (-x, +x), applied as percent deviation from original
-         - If tuple/list: sampled from [zoom_factor[0], zoom_factor[1]]
+         - Range: -200 to 200 (percent of original size)
+         - If scalar `x`: interpreted as (-x, +x), applied as percent deviation from original. For instance if zoom_factor is set to 20, it means zoom into the image by a random percentage between -20% and +20%. -30 mean zoom-out of the image by 30% of its original size.
+         - If tuple/list: sampled from [zoom_factor[0], zoom_factor[1]]. E.g. [20 - 40] means, zoom in by a random percentage between 20%  to 40%.
       fill_mode: Strategy used to fill pixels outside the transformed image boundaries.
          One of: `{"constant", "reflect", "wrap", "nearest"}`.
          - *reflect*: `(d c b a | a b c d | d c b a)` — reflects about the edge of the last pixel.
@@ -1643,9 +1645,9 @@ class AffineTransform(AugmentationLayer):
 
     def __init__(self,
                  rotate: bool = False,
-                 theta: Union[int, List[int], Tuple[int, int], None] = 180,
+                 theta: Union[int, List[int], Tuple[int, int], None] = (-180, 180),
                  shear: bool = False,
-                 shear_angle: Union[list, tuple, float, None] = 2,
+                 shear_angle: Union[list, tuple, float, None] = (0, 4),
                  zoom: bool = False,
                  zoom_factor: Union[int, list, tuple, None] = (1, 90),
                  fill_mode="reflect",
@@ -1657,37 +1659,6 @@ class AffineTransform(AugmentationLayer):
                  batches_before_aug: Optional[int] = None,
                  name='affine_transform',
                  **kwargs):
-        """
-        :param rotate: bool, If rotate is set to `True`, the images and their corresponding
-            segmentation masks (if available) will be randomly rotated during training.
-            be applied to the images and segmentation masks.
-        :param theta: a float, int, tuple or list, representing the angle by which the
-            image and mask would be rotated. If is a single value (int or float) the
-            rotation range would be between [-angle, angle]
-        :param shear: bool, If shear is set to `True`, the images and their corresponding
-            segmentation masks (if available) will be randomly sheared during training.
-            be applied to the images and segmentation masks.
-        :param shear_angle: float, Transformation intensity in degrees.
-        :param zoom: bool, If zoom is set to `True`, the images and their corresponding
-            segmentation masks (if available) will be randomly zoomed during training.
-            be applied to the images and segmentation masks.
-        :param zoom_factor:
-        :param fill_mode: Points outside the boundaries of the input are filled according
-            to the given mode (one of `{"constant", "reflect", "wrap", "nearest"}`).
-             - *reflect*: `(d c b a | a b c d | d c b a)` The input is extended by
-               reflecting about the edge of the last pixel.
-             - *constant*: `(k k k k | a b c d | k k k k)` The input is extended by
-               filling all values beyond the edge with the same constant value k = 0.
-             - *wrap*: `(a b c d | a b c d | a b c d)` The input is extended by
-               wrapping around to the opposite edge.
-             - *nearest*: `(a a a a | a b c d | d d d d)` The input is extended by
-               the nearest pixel.
-        :param interpolation: Interpolation mode. Supported values: `"nearest"`,
-            `"bilinear"`.
-        :param fill_value: a float represents the value to be filled outside the
-         boundaries when `fill_mode="constant"`.
-        """
-        base_preprocessing_layer.keras_kpl_gauge.get_cell("DualAffineTransform").set(True)
 
         super().__init__(image_key=image_key,
                          target_key=target_key,
@@ -1772,14 +1743,14 @@ class AffineTransform(AugmentationLayer):
 
         rotation_matrices = tf.stack([
             tf.stack([cos_theta, -sin_theta, zeros], axis=1),
-            tf.stack([sin_theta, cos_theta, zeros], axis=1),
-            tf.stack([zeros, zeros, ones], axis=1)
+            tf.stack([sin_theta, cos_theta,  zeros], axis=1),
+            tf.stack([zeros,     zeros,      ones], axis=1)
         ], axis=1)  # shape: [batch_size, 3, 3]
 
         shear_matrices = tf.stack([
             tf.stack([ones, -tf.sin(shear), zeros], axis=1),
             tf.stack([zeros, tf.cos(shear), zeros], axis=1),
-            tf.stack([zeros, zeros, ones], axis=1)
+            tf.stack([zeros, zeros,          ones], axis=1)
         ], axis=1)
 
         zoom_matrices = tf.stack([
@@ -1787,6 +1758,7 @@ class AffineTransform(AugmentationLayer):
             tf.stack([zeros, zoom, zeros], axis=1),
             tf.stack([zeros, zeros, ones], axis=1)
         ], axis=1)
+
 
         # Combine
         return tf.matmul(tf.matmul(rotation_matrices, shear_matrices), zoom_matrices)  # shape: [batch, 3, 3]
@@ -1835,7 +1807,7 @@ class AffineTransform(AugmentationLayer):
         if self.rotate and self.theta is not None:
             self.apply_rotate = True
 
-            check_input(inputs=self.theta, name='theta', input_range=(0, 180))
+            check_input(inputs=self.theta, name='theta', input_range=(-180, 180))
 
             if isinstance(self.theta, (tuple, list)):
                 self.rotate_lower = np.deg2rad(self.theta[0])
@@ -1884,7 +1856,7 @@ class AffineTransform(AugmentationLayer):
         if self.zoom and self.zoom_factor is not None:
             self.apply_zoom = True
 
-            check_input(inputs=self.zoom_factor, name='zoom_factor', input_range=(1, 200))
+            check_input(inputs=self.zoom_factor, name='zoom_factor', input_range=(-200, 200))
             zoom_factor = interpolate_to_tensorflow_value(custom_value=self.zoom_factor,
                                                           custom_datapoints=custom_interp_datapoints,
                                                           tensorflow_datapoints=tensorflow_interp_datapoints)
@@ -1893,7 +1865,7 @@ class AffineTransform(AugmentationLayer):
                 self.zoom_lower = zoom_factor[0]
                 self.zoom_upper = zoom_factor[1]
             else:
-                self.zoom_lower = -zoom_factor
+                self.zoom_lower = -abs(zoom_factor)
                 self.zoom_upper = zoom_factor
 
         else:
