@@ -1,11 +1,13 @@
 from typing import List
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, Dict
 
 import keras
+import matplotlib.pyplot as plt
 import tensorflow as tf
 
 from app.layers.augmentation import (RandomAugmentationLayer, PassThroughLayer, NormalizeImage, SplitImageTarget)
 from app.layers.segmenter import ExpandLabelAxis
+from app.utils.directory_file_management import dirs
 
 
 @keras.saving.register_keras_serializable(package='Augmentation', name='AugmentedModel')
@@ -70,24 +72,42 @@ class AugmentedModel(tf.keras.Model):
             - 'HORIZONTAL_AND_VERTICAL': both directions randomly
 
     :param rotate: (bool): Enable random rotation. Default: False.
-    :param theta: (int or Tuple[int, int]): Rotation angle in degrees. e.g. (-30, 30).
-            - If int: maximum absolute angle. e.g., 30 → (-30°, +30°)
-            - If tuple: explicit range (e.g., (-45, 45))
+    :param theta: (int or Tuple[int, int]): Rotation angle in degrees. Can be:
+                  - A single number → rotation in `[-theta, +theta]`
+                  - A tuple/list → rotation in `[min_angle, max_angle]`. For instance, (-40, 45).
+                  Valid range: [-180°, 180°]
+
 
     :param shear: (bool): Enable shearing. Default: False.
-    :param shear_angle: (float or Tuple[float, float]): Shear angles in degrees. eg.: (-10.0, 10.0).
+    :param shear_angle: (float or Tuple[float, float]): Shear angles in degrees.
+        eg.: (-10.0, 10.0). The valid range is (-45.0, 45).
 
     :param zoom: (bool): Enable zooming. Default: False.
-    :param zoom_factor: (int or Tuple[int, int]): Zoom in/out as percentage. eg. (80, 120). Setting zoom factor to
-            -100 = no zoom. (90, 110) → 0.9x–1.1x zoom range
+    :param zoom_factor: A float, int, tuple, or list specifying the zoom scale in percentage.
+         - Range: -200 to 200 (percent of original size)
+         - If scalar `x`: interpreted as (-x, +x), applied as percent deviation from original. For instance if zoom_factor is set to 20, it means zoom into the image by a random percentage between -20% and +20%. -30 mean zoom-out of the image by 30% of its original size.
+         - If tuple/list: sampled from [zoom_factor[0], zoom_factor[1]]. E.g. [20 - 40] means, zoom in by a random percentage between 20%  to 40%.
 
     :param use_gaussian_noise: (bool): Add Gaussian noise to input. Default: False.
-    :param gaussian_range: Tuple of floats defining standard deviation of noise.
-                           E.g., `(0.0, 0.02)` where 0.02 = 2% noise. Must be ≥ 0.
+    :param gaussian_range: A float, list, or tuple representing the lower and upper bounds of the
+          standard deviation to use for sampling Gaussian noise. If a single float is provided,
+          it is treated as the upper bound with the lower bound defaulting to 0.0. Both values
+          must be ≥ 0.
 
     :param adjust_brightness: (bool): Adjust brightness randomly. Default: False.
-    :param brightness_range: Tuple of floats. 1.0 means no change.
-                             E.g., `(0.9, 1.1)` varies brightness ±10%.
+    :param brightness_range: A float, or tuple/list of two floats between -1.0 and 1.0. The
+            factor is used to determine the lower bound and upper bound of the
+            brightness adjustment.  A float will be randomly chosen between the limits.
+                - Values above 0 brighten the image; values below 0 darken it.
+                - When only one float is provided, eg, 0.2, then -0.2 will be used for lower bound
+                  and 0.2 will be used for upper bound.
+                - If a tuple/list is provided, the factor is sampled from `[factor[0], factor[1]]`.
+    :param jitter: Whether to apply spatial jitter (random spatial shift of the image and mask).
+    :param jitter_range: Tuple of two integers specifying the minimum and maximum pixel offset
+                             for spatial jitter. A random shift is applied independently along height
+                             and width in the range [min, max].
+                             - Allowed range: (0, 60)
+                             - Example: (5, 15) allows shifts up to ±15 pixels in both dimensions.
 
     :param normalize: (bool): Whether to normalize images before inference. Default: True.
     :param scale_to_0_1: (bool): Whether to scale pixel values to [0, 1]. Default: True. If it is set to False, the pixel will be scaled to [-1, 1].
@@ -116,11 +136,13 @@ class AugmentedModel(tf.keras.Model):
                  shear: bool = False,
                  shear_angle: Union[list, tuple, float, None] = (0, 2),
                  zoom: bool = False,
-                 zoom_factor: Union[int, list, tuple, None] = (90, 110),
+                 zoom_factor: Union[int, list, tuple, None] = (1, 2.5),
                  use_gaussian_noise: bool = False,
                  gaussian_range: Union[float, Tuple[float, float]] = (0.0, 0.01),
                  adjust_brightness: bool = False,
-                 brightness_range: Union[float, list, tuple] = (0.90, 1.10),
+                 brightness_range: Union[float, list, tuple] = (0.0, 0.15),
+                 adjust_contrast: bool = False,
+                 contrast_range: Union[float, List[float], Tuple[float, float]]=(0.1, 1.0),
                  jitter: bool = False,
                  jitter_range: Union[List[int], Tuple[int, int]] = (0, 60),
                  normalize: bool = True,
@@ -129,8 +151,9 @@ class AugmentedModel(tf.keras.Model):
                  interpolation: str = "nearest",
                  fill_value: float = 0.0,
                  image_intensity_range: Tuple[float, float] = (0.0, 255.0),
-                 name: str = 'augmented_model',
+                 name: str ='augmented_model',
                  **kwargs):
+
 
         super().__init__(name=name, **kwargs)
 
@@ -153,6 +176,8 @@ class AugmentedModel(tf.keras.Model):
         self.gaussian_range = gaussian_range
         self.adjust_brightness = adjust_brightness
         self.brightness_range = brightness_range
+        self.adjust_contrast = adjust_contrast
+        self.contrast_range = contrast_range
         self.jitter = jitter
         self.jitter_range = jitter_range
         self.normalize = normalize
@@ -178,6 +203,8 @@ class AugmentedModel(tf.keras.Model):
                                                  gaussian_range=gaussian_range,
                                                  adjust_brightness=adjust_brightness,
                                                  brightness_range=brightness_range,
+                                                 adjust_contrast=adjust_contrast,
+                                                 contrast_range=contrast_range,
                                                  jitter=jitter,
                                                  jitter_range=jitter_range,
                                                  fill_mode=fill_mode,
@@ -209,6 +236,8 @@ class AugmentedModel(tf.keras.Model):
             # is not 3D or 4D, it will be returned untorched.
             targets = self.expand_label_axis(targets)
 
+            # Normalizer images (if activated)
+            images = self.normalizer(images)
             # Forward pass
             y_pred = self.base_model(images)
 
@@ -318,6 +347,27 @@ class AugmentedModel(tf.keras.Model):
     def reset_counter(self):
         self.augmenter.reset_counter()
 
+    def check_dict_keys(self, inputs):
+        """Checks that the inputs have the correct dict keys"""
+        if not all([key in inputs for key in [self.image_key, self.target_key]]):
+            raise KeyError(f"Invalid dictionary keys for training examples. "
+                           f"Got keys: {list(inputs.keys())}"
+                           f"The Images and segmentation mask must be assigned to the "
+                           f"keys '{self.image_key}' and '{self.target_key}', respectively. ")
+
+    @staticmethod
+    def is_batched(tensor: tf.Tensor)-> bool:
+        """
+        Determines if the input tensor is batched (i.e., 4D).
+
+        Args:
+            tensor: A TensorFlow tensor, typically with shape [B, H, W, C] or [H, W, C].
+
+        Returns:
+            True if the tensor is batched (rank == 4), False otherwise.
+        """
+        return tensor.shape.rank == 4
+
     def unpack_x_y_sample_weight(self, data):
         """Unpacks user-provided data tuple.
 
@@ -389,3 +439,84 @@ class AugmentedModel(tf.keras.Model):
             ).format(data)
             raise ValueError(error_msg)
 
+    @staticmethod
+    def load_jpg(img_path: str):
+        image_data = tf.io.read_file(img_path)
+        image = tf.image.decode_jpeg(image_data)
+        return image
+
+    def preview_augmentation(self, input_data: Optional[Union[Dict[str, tf.Tensor], Tuple[Union[str, tf.Tensor]]]] = None) -> Optional[Tuple]:
+        """
+        Generates and displays augmented versions of a single image–target pair using the current augmentation pipeline.
+
+        :param input_data: Optional. One of:
+                - dict with image-mask tensors {image_key: ...., target_key: ...}
+                - tuple of (image_path, target_path)
+                - tuple of (image_tensor, target_tensor)
+                - None -> loads default local sample
+        """
+
+
+        # use fallback if input_data is None
+        if input_data is None:
+            image = self.load_jpg(dirs.preview_image)
+            mask = self.load_jpg(dirs.preview_mask)
+        elif isinstance(input_data, dict):
+            self.check_dict_keys(input_data)
+            image = input_data[self.image_key]
+            mask = input_data[self.target_key]
+            if self.is_batched(image):
+                image = image[0]
+            if self.is_batched(mask):
+                mask = mask[0]
+        elif isinstance(input_data, tuple) and all(isinstance(p, str) for p in input_data):
+            image = self.load_jpg(input_data[0])
+            mask = self.load_jpg(input_data[1])
+        elif isinstance(input_data, tuple) and all(isinstance(p, tf.Tensor) for p in input_data):
+            image, mask = input_data
+            if self.is_batched(image):
+                image = image[0]
+            if self.is_batched(mask):
+                mask = mask[0]
+        else:
+            raise ValueError("Unsupported input format. Must be dict, (path, path), (tensor, tensor), or None.")
+
+        # === 2. Stack batch of six ===
+        image_batch = tf.stack([image] * 6, axis=0)
+        mask_batch = tf.stack([mask] * 6, axis=0)
+
+        input_dict = {
+            self.image_key: image_batch,
+            self.target_key: mask_batch
+        }
+
+        # ==== 3. Augment ====
+
+        augmented = self.augmenter(input_dict, training=True)
+        augmented_images = augmented[self.image_key]
+        augmented_masks = augmented[self.target_key]
+
+        # === 5. Plot as 7 rows × 2 columns ===
+        fig, axes = plt.subplots(7, 2, figsize=(6, 18))
+
+        # First row → original
+        axes[0, 0].imshow(tf.cast(image, tf.uint8))
+        axes[0, 0].set_title("Original Image")
+        axes[0, 0].axis("off")
+
+        axes[0, 1].imshow(tf.squeeze(mask, axis=-1), cmap="gray")
+        axes[0, 1].set_title("Original Mask")
+        axes[0, 1].axis("off")
+
+        # Next 6 rows → augmented
+        for i in range(6):
+            axes[i + 1, 0].imshow(tf.cast(augmented_images[i], tf.uint8))
+            axes[i + 1, 0].set_title(f"Aug {i + 1} Image")
+            axes[i + 1, 0].axis("off")
+
+            axes[i + 1, 1].imshow(tf.squeeze(augmented_masks[i], axis=-1), cmap="gray")
+            axes[i + 1, 1].set_title(f"Aug {i + 1} Mask")
+            axes[i + 1, 1].axis("off")
+
+        plt.tight_layout()
+        plt.show()
