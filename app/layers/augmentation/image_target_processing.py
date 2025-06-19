@@ -1079,20 +1079,28 @@ class RandomGaussianNoise(AugmentationLayer):
 @keras.saving.register_keras_serializable(package='Augmentation', name='RandomFlip')
 class RandomFlip(AugmentationLayer):
     """
-    A preprocessing layer which randomly flips images and segmentation masks during training.
+    A preprocessing layer that randomly flips images, segmentation masks, and bounding boxes during training.
 
-    This layer applies horizontal, vertical, or both flips per batch sample based on a random condition.
-    The flipping is only performed during training. During inference, or if inactive, the layer does nothing.
+    This layer supports horizontal, vertical, or both types of flips. Each sample in the batch is independently
+    considered for flipping based on a random condition. No flipping occurs during inference or if the layer is inactive.
 
-    Inputs:
-        {
-            'images': 3D or 4D tensor (HWC or BHWC),
-            'targets': 1D–4D tensor (segmentation mask or label),
-            'bounding_boxes': (optional) 2D or 3D bounding box tensor
-        }
+    Attributes:
+        mode (str): One of {'horizontal', 'vertical', 'horizontal_and_vertical'} specifying the flip direction(s).
+        active (bool): Whether to activate the augmentation during training.
+        image_key (str): Key to access image tensors in the input dictionary. Default value = 'images'
+        target_key (str): Key to access target tensors. Default value = 'targets'
+        bounding_box_key (str): Key to access bounding box tensors (optional). default value = 'bounding_box'
+        batches_before_aug (int, optional): Number of batches to skip before applying augmentation.
+        auto_vectorize (bool): Whether the augmentation is vectorized over the batch (enabled by default).
 
-    Outputs:
-        A dictionary with the same keys, where 'images' and 'targets' are flipped conditionally.
+    Input:
+        A dictionary containing:
+            - 'images': 3D or 4D tensor of shape [H, W, C] or [B, H, W, C].
+            - 'targets': 1D to 4D tensor (e.g., segmentation masks or class labels).
+            - 'bounding_boxes' (optional): 2D or 3D tensor of shape [B, N, 4] with format [x_min, y_min, x_max, y_max].
+
+    Output:
+        A dictionary with the same structure, where 'images', 'targets', and optionally 'bounding_boxes' are randomly flipped.
     """
 
     def __init__(self,
@@ -1133,8 +1141,8 @@ class RandomFlip(AugmentationLayer):
     def get_random_transformation(self, image=None, label=None, bounding_box=None):
         batch_size = tf.shape(image)[0]
 
-        flip_horizontal = tf.random.uniform([batch_size], 0.0, 1.0) < 0.5 if self.horizontal else tf.zeros([batch_size], dtype=tf.bool)
-        flip_vertical = tf.random.uniform([batch_size], 0.0, 1.0) < 0.5 if self.vertical else tf.zeros([batch_size], dtype=tf.bool)
+        flip_horizontal = tf.random.uniform([batch_size, 1, 1, 1], 0.0, 1.0) < 0.5 if self.horizontal else tf.zeros([batch_size], dtype=tf.bool)
+        flip_vertical = tf.random.uniform([batch_size, 1, 1, 1], 0.0, 1.0) < 0.5 if self.vertical else tf.zeros([batch_size], dtype=tf.bool)
 
         return {
             "flip_horizontal": flip_horizontal,
@@ -1142,24 +1150,24 @@ class RandomFlip(AugmentationLayer):
         }
 
     def augment_image(self, image, transformation):
-        flip_h = tf.reshape(transformation["flip_horizontal"], [-1, 1, 1, 1])
-        flip_v = tf.reshape(transformation["flip_vertical"], [-1, 1, 1, 1])
+        flip_horizontal = transformation["flip_horizontal"]
+        flip_vertical = transformation["flip_vertical"]
 
         if self.horizontal:
-            image = tf.where(flip_h, tf.image.flip_left_right(image), image)
+            image = tf.where(flip_horizontal, tf.image.flip_left_right(image), image)
         if self.vertical:
-            image = tf.where(flip_v, tf.image.flip_up_down(image), image)
+            image = tf.where(flip_vertical, tf.image.flip_up_down(image), image)
 
         return image
 
     def augment_label(self, label, transformation):
-        flip_h = tf.reshape(transformation["flip_horizontal"], [-1, 1, 1, 1])
-        flip_v = tf.reshape(transformation["flip_vertical"], [-1, 1, 1, 1])
+        flip_horizontal = transformation["flip_horizontal"]
+        flip_vertical = transformation["flip_vertical"]
 
         if self.horizontal:
-            label = tf.where(flip_h, tf.image.flip_left_right(label), label)
+            label = tf.where(flip_horizontal, tf.image.flip_left_right(label), label)
         if self.vertical:
-            label = tf.where(flip_v, tf.image.flip_up_down(label), label)
+            label = tf.where(flip_vertical, tf.image.flip_up_down(label), label)
 
         return label
 
@@ -1202,6 +1210,7 @@ class RandomFlip(AugmentationLayer):
 
 @keras.saving.register_keras_serializable(package='Augmentation', name='RandomShear')
 class RandomShear(AugmentationLayer):
+
     """
     A preprocessing layer which randomly applies shear transformations during training.
 
