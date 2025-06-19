@@ -2834,6 +2834,9 @@ class RandomAugmentationLayer(Layer):
 
     Example Usage:
             >>> augmenter = RandomAugmentationLayer(
+            >>>     image_key = 'images',
+            >>>     target_key= 'targets',
+            >>>     bounding_box_key= 'bounding_boxes',
             >>>     flip=True,
             >>>     rotate=True,
             >>>     theta=30,
@@ -2866,32 +2869,52 @@ class RandomAugmentationLayer(Layer):
             - 'HORIZONTAL_AND_VERTICAL': both directions randomly
 
     :param rotate: Enables random image rotation.
-    :param theta: Rotation angle in degrees. Can be:
+    :param theta: (int or Tuple[int, int]): Rotation angle in degrees. Can be:
                   - A single number → rotation in `[-theta, +theta]`
-                  - A tuple/list → rotation in `[min_angle, max_angle]`
-                  Recommended: 0–180°
+                  - A tuple/list → rotation in `[min_angle, max_angle]`. For instance, (-40, 45).
+                  Valid range: [-180°, 180°]
 
     :param shear: Enables shear transformation.
-    :param shear_angle: Shear angle range in degrees. Tuple/list preferred. E.g., `(0, 10)`.
+    :param shear_angle: (float or Tuple[float, float]): Shear angles in degrees. eg.: (-10.0, 10.0).
+        The valid range is (-45.0, 45).
 
     :param zoom: Enables random zoom.
-    :param zoom_factor: Tuple/list of ints indicating zoom percentage range.
-                        E.g., `(90, 110)` zooms between -10% to +10%. Values must be > 0.
+    :param zoom_factor: A float, int, tuple, or list specifying the zoom scale in percentage.
+         - Range: -200 to 200 (percent of original size)
+         - If scalar `x`: interpreted as (-x, +x), applied as percent deviation from original. For instance if zoom_factor is set to 20, it means zoom into the image by a random percentage between -20% and +20%. -30 mean zoom-out of the image by 30% of its original size.
+         - If tuple/list: sampled from [zoom_factor[0], zoom_factor[1]]. E.g. [20 - 40] means, zoom in by a random percentage between 20%  to 40%.
 
     :param use_gaussian_noise: If `True`, adds Gaussian noise to image only.
-    :param gaussian_range: Tuple of floats defining standard deviation of noise.
-                           E.g., `(0.0, 0.02)` where 0.02 = 2% noise. Must be ≥ 0.
+    :param gaussian_range: A float, list, or tuple representing the lower and upper bounds of the
+          standard deviation to use for sampling Gaussian noise. If a single float is provided,
+          it is treated as the upper bound with the lower bound defaulting to 0.0. Both values
+          must be ≥ 0.
 
     :param adjust_brightness: Enables brightness changes.
-    :param brightness_range: Tuple of floats. 1.0 means no change.
-                             E.g., `(0.9, 1.1)` varies brightness ±10%.
+    :param brightness_range: A float, or tuple/list of two floats between -1.0 and 1.0. The
+            factor is used to determine the lower bound and upper bound of the
+            brightness adjustment.  A float will be randomly chosen between the limits.
+                - Values above 0 brighten the image; values below 0 darken it.
+                - When only one float is provided, eg, 0.2, then -0.2 will be used for lower bound
+                  and 0.2 will be used for upper bound.
+                - If a tuple/list is provided, the factor is sampled from `[factor[0], factor[1]]`.
 
     :param adjust_contrast: Enables contrast adjustment.
-    :param contrast_range: Tuple of floats. E.g., `(0.9, 1.1)` adjusts contrast ±10%.
+    :param contrast_range: a positive float represented as fraction of value, or a tuple of
+            size 2 representing lower and upper bound.
+            When represented as a single float, lower = upper.
+            The contrast factor will be randomly picked between
+            `[1.0 - lower, 1.0 + upper]`. For any pixel x in the channel,
+            the output will be `(x - mean) * factor + mean`
+            where `mean` is the mean value of the channel.
 
-    :param apply_jitter: Enables pixel-level random jitter.
-    :param jitter_intensity: Tuple of ints, typically `(1, 5)`, controlling pixel-level variation
-                             by randomly adding or subtracting up to `jitter_intensity` per channel.
+    :param apply_jitter: Whether to apply spatial jitter (random spatial shift of the image and mask).
+    :param jitter_intensity: Tuple of two integers specifying the minimum and maximum pixel offset
+                             for spatial jitter. A random shift is applied independently along height
+                             and width in the range [min, max].
+                             - Allowed range: (0, 60)
+                             - Example: (5, 15) allows shifts up to ±15 pixels in both dimensions.
+
 
     :param center_crop: If `True`, crops the center of the final image.
     :param output_height: Output height in pixels. Required if `center_crop=True`.
@@ -2933,12 +2956,9 @@ class RandomAugmentationLayer(Layer):
                  adjust_brightness: bool = False,
                  brightness_range: Union[float, list, tuple] = (0.90, 1.10),
                  adjust_contrast: bool = False,
-                 contrast_range: Union[float, List[float], Tuple[float, float]] = (0.1, 1.0),
+                 contrast_range: Union[float, List[float], Tuple[float, float]]=(0.1, 1.0),
                  jitter: bool = False,
                  jitter_range: Union[List[int], Tuple[int, int]] = (0, 60),
-                 center_crop: bool = False,
-                 output_height: Union[int, None] = None,
-                 output_width: Union[int, None] = None,
                  fill_mode: str = "reflect",
                  interpolation: str = "bilinear",
                  image_intensity_range: Tuple[float, float] = (0.0, 255.0),
@@ -2972,22 +2992,7 @@ class RandomAugmentationLayer(Layer):
         self.fill_mode = fill_mode
         self.interpolation = interpolation
         self.fill_value = fill_value
-        self.center_crop = center_crop
-        self.output_width = output_width
-        self.output_height = output_height
 
-        if center_crop:
-            if all(isinstance(value, int) for value in [output_height, output_width]):
-                self.output_width = output_width
-                self.output_height = output_height
-            else:
-                raise TypeError(
-                    "The `output_height` and `output_width` parameters "
-                    "must be of type int. Got height="
-                    "{} and width={} of type {} and {}".format(output_height,
-                                                               output_width,
-                                                               type(output_height),
-                                                               type(output_width)))
 
         self.flip_layer = RandomFlip(mode=self.flip_mode,
                                      active=self.flip,
