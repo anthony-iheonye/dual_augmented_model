@@ -799,6 +799,7 @@ class RandomRotation(AugmentationLayer):
       ValueError: If `angle` is a list or tuple not of length 2, or if the upper angle is less than the lower.
     """
 
+
     def __init__(self,
                  angle: Union[int, float, List[int], Tuple[int, int]] = 180,
                  active: bool = True,
@@ -809,8 +810,9 @@ class RandomRotation(AugmentationLayer):
                  target_key: str = 'targets',
                  bounding_box_key: str = "bounding_boxes",
                  batches_before_aug: Optional[int] = None,
-                 name: str = 'random_rotation',
+                 name:str = 'random_rotation',
                  **kwargs):
+
 
         super().__init__(active=active,
                          image_key=image_key,
@@ -954,6 +956,7 @@ class RandomRotation(AugmentationLayer):
 
 @keras.saving.register_keras_serializable(package='Augmentation', name='RandomGaussianNoise')
 class RandomGaussianNoise(AugmentationLayer):
+
     """
     A preprocessing layer which randomly applies Gaussian noise to images during training.
 
@@ -1040,15 +1043,14 @@ class RandomGaussianNoise(AugmentationLayer):
                 "{} is less than {}".format(self.upper, self.lower))
 
     def get_random_transformation(self, image=None, label=None, bounding_box=None):
-
+        batch_size = tf.shape(image)[0]
         min_stddev = self.lower
         max_stddev = self.upper
-        batch_size = tf.shape(image)[0]
-        stddev = tf.random.uniform(shape=[batch_size], minval=min_stddev, maxval=max_stddev)
 
-        # broadcast stddev to [batch_size, 1, 1, 1], the noise added to each image
-        # in the batch uses a different standard deviation.
-        stddev = tf.reshape(stddev, [-1, 1, 1, 1])
+        # Set shape of stddev to [batch_size, 1, 1, 1], so that the noise is added to each image
+        # in the batch using a different standard deviation.
+        stddev = tf.random.uniform(shape=[batch_size, 1, 1, 1], minval=min_stddev, maxval=max_stddev)
+
         return {"stddev": stddev}
 
     def augment_image(self, image, transformation):
@@ -1070,7 +1072,7 @@ class RandomGaussianNoise(AugmentationLayer):
 
     def get_config(self):
         config = super().get_config()
-        config.update({"stddev": self.stddev, })
+        config.update({"stddev": self.stddev ,})
         return config
 
 
@@ -2931,6 +2933,8 @@ class RandomAugmentationLayer(Layer):
                  gaussian_range: Union[float, List[float], Tuple[float, float]] = (0.0, 0.01),
                  adjust_brightness: bool = False,
                  brightness_range: Union[float, list, tuple] = (0.90, 1.10),
+                 adjust_contrast: bool = False,
+                 contrast_range: Union[float, List[float], Tuple[float, float]] = (0.1, 1.0),
                  jitter: bool = False,
                  jitter_range: Union[List[int], Tuple[int, int]] = (0, 60),
                  center_crop: bool = False,
@@ -2962,6 +2966,8 @@ class RandomAugmentationLayer(Layer):
         self.gaussian_range = gaussian_range
         self.adjust_brightness = adjust_brightness
         self.brightness_range = brightness_range
+        self.adjust_contrast = adjust_contrast
+        self.contrast_range = contrast_range
         self.apply_jitter = jitter
         self.jitter_range = jitter_range
         self.fill_mode = fill_mode
@@ -2986,9 +2992,9 @@ class RandomAugmentationLayer(Layer):
 
         self.flip_layer = RandomFlip(mode=self.flip_mode,
                                      active=self.flip,
-                                     image_key=self.image_key,
-                                     target_key=self.target_key,
-                                     bounding_box_key=self.bounding_box_key,
+                                     image_key = self.image_key,
+                                     target_key= self.target_key,
+                                     bounding_box_key= self.bounding_box_key,
                                      batches_before_aug=self.batches_before_aug,
                                      name='horizontal_flip')
 
@@ -3024,6 +3030,14 @@ class RandomAugmentationLayer(Layer):
                                                  batches_before_aug=self.batches_before_aug,
                                                  name='brightness')
 
+        self.contrast_layer = RandomContrast(factor=contrast_range,
+                                             active=self.adjust_contrast,
+                                             image_key=self.image_key,
+                                             target_key=self.target_key,
+                                             bounding_box_key=self.bounding_box_key,
+                                             batches_before_aug=self.batches_before_aug,
+                                             name='contrast')
+
         self.jitter_layer = RandomJitter(active=self.apply_jitter,
                                          jitter_range=self.jitter_range,
                                          image_key=self.image_key,
@@ -3031,6 +3045,7 @@ class RandomAugmentationLayer(Layer):
                                          bounding_box_key=self.bounding_box_key,
                                          batches_before_aug=self.batches_before_aug,
                                          name='jitter')
+
 
         # keep track of all layers that were activated.
         self.register = []
@@ -3043,6 +3058,8 @@ class RandomAugmentationLayer(Layer):
             self.register.append(self.noise_layer)
         if adjust_brightness:
             self.register.append(self.brightness_layer)
+        if adjust_contrast:
+            self.register.append(self.contrast_layer)
         if jitter:
             self.register.append(self.jitter_layer)
 
@@ -3055,6 +3072,7 @@ class RandomAugmentationLayer(Layer):
         """
         x = self.flip_layer(inputs, training=training)
         x = self.affine_layer(x, training=training)
+        x = self.contrast_layer(x, training=training)
         x = self.noise_layer(x, training=training)
         x = self.jitter_layer(x, training=training)
         x = self.brightness_layer(x, training=training)
@@ -3069,7 +3087,7 @@ class RandomAugmentationLayer(Layer):
 
     def get_config(self):
         base_config = super().get_config()
-        config = {"image_key": self.image_key,
+        config = {"image_key":self.image_key,
                   "target_key": self.target_key,
                   "bounding_box_key": self.bounding_box_key,
                   "batches_before_augmentation": self.batches_before_aug,
@@ -3096,3 +3114,4 @@ class RandomAugmentationLayer(Layer):
                   "fill_value": self.fill_value}
         base_config.update(config)
         return base_config
+
