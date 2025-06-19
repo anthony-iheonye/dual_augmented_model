@@ -94,6 +94,7 @@ class NormalizeImage(AugmentationLayer):
     """
 
     def __init__(self,
+                 image_key: str = 'images',
                  active: bool = True,
                  scale_to_0_1: bool = True,
                  name: str = 'normalize_layer'):
@@ -106,7 +107,7 @@ class NormalizeImage(AugmentationLayer):
                                  If False, normalize to [-1, 1] using (x - 127.5) / 127.5.
             name (str): Name of the layer.
         """
-        super().__init__(name=name, active=active)
+        super().__init__(name=name, active=active, image_key=image_key)
         self.scale_to_0_1 = scale_to_0_1
 
         if self.scale_to_0_1:
@@ -133,35 +134,36 @@ class NormalizeImage(AugmentationLayer):
 
         return tf.cond(
             pred=tf.convert_to_tensor(self.active),
-            true_fn=lambda: self._augment(inputs),
+            true_fn=lambda: self.norm_fn(inputs),
             false_fn=lambda: inputs)
 
-    def augment_image(self, image, transformation):
-        """
-        Normalizes the input image using the configured scaling function.
+    def check_inputs_type(self, inputs):
+        """Ensures the input is a Python dictionary"""
+        if not isinstance(inputs, (dict, tf.Tensor)):
+            raise TypeError(f"The inputs must be a tf.Tensor or a dict, with "
+                            f"key '{self.image_key}'. "
+                            f"Got {inputs} of type {type(inputs).__name__}")
 
-        Args:
-            image (Tensor): A 3D or 4D image tensor.
-            transformation (Any): Unused; included for compatibility.
+    def check_dict_keys(self, inputs):
+        """Checks that the inputs have the correct dict keys"""
+        if not self.image_key in inputs:
+            raise KeyError(f"Invalid dictionary for inputs. "
+                           f"Got keys: {list(inputs.keys())}"
+                           f"The Images  must be assigned to the "
+                           f"key '{self.image_key}'. ")
 
-        Returns:
-            Tensor: Normalized image tensor.
-        """
-        image = utils.ensure_tensor(image, self.compute_dtype)
-        return self.norm_fn(image)
+    def _ensure_inputs_are_compute_dtype(self, inputs):
+        """Ensures the input is a Tensor, SparseTensor or RaggedTensor."""
+        self.check_inputs_type(inputs)
 
-    def augment_label(self, label, transformation):
-        """
-        Passes labels through unchanged.
-
-        Args:
-            label (Tensor): The target or segmentation mask.
-            transformation (Any): Unused; included for compatibility.
-
-        Returns:
-            Tensor: The label tensor unchanged.
-        """
-        return label
+        if isinstance(inputs, dict):
+            self.check_dict_keys(inputs)
+            image = utils.ensure_tensor(inputs=inputs[self.image_key],
+                                        dtype=self.compute_dtype)
+            return image
+        else:
+            image = utils.ensure_tensor(inputs=inputs, dtype=self.compute_dtype)
+            return image
 
     def get_config(self):
         """
