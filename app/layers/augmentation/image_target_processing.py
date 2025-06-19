@@ -2118,13 +2118,20 @@ class RandomBrightness(AugmentationLayer):
         TensorShape([2, 128, 128, 3])
 
     Arguments:
-        factor: A float, or tuple/list of two floats, in the range `[0.1, 2.0]`.
-            - Values above 1.0 brighten the image; values below 1.0 darken it.
-            - If a single float is provided, brightness factor will be sampled from `[1.0 - factor, 1.0 + factor]`.
-            - If a tuple/list is provided, the factor is sampled from `[factor[0], factor[1]]`.
-        image_intensity_range: A tuple or list specifying the lower and upper bounds of pixel values (e.g., `[0, 1]` or `[0, 255]`).
-            - The brightness offset is computed relative to this range.
-            - Output is clipped to stay within this range after transformation.
+        factor: A float, or tuple/list of two floats between -1.0 and 1.0. The
+            factor is used to determine the lower bound and upper bound of the
+            brightness adjustment.  A float will be randomly chosen between the limits.
+                - Values above 0 brighten the image; values below 0 darken it.
+                - When only one float is provided, eg, 0.2, then -0.2 will be used for lower bound
+                  and 0.2 will be used for upper bound.
+                - If a tuple/list is provided, the factor is sampled from `[factor[0], factor[1]]`.
+
+        image_intensity_range: A tuple or list specifying the lower and upper bounds of pixel
+            values (e.g., `[0, 1]` or `[0, 255]`). If the input is normalized to 0.0 - 1.0, use
+            image_intensity_range of (0, 1) , else, use (0, 255)
+                - The brightness offset is computed relative to this range.
+                - Output is clipped to stay within this range after transformation.
+
         image_key: Dictionary key used to access the image tensor. Default is `'images'`.
         target_key: Dictionary key used to access the target tensor. Default is `'targets'`.
         bounding_box_key: Dictionary key used to access the bounding box tensor. Default is `'bounding_boxes'`.
@@ -2132,9 +2139,10 @@ class RandomBrightness(AugmentationLayer):
         kwargs: Additional keyword arguments passed to the base `AugmentationLayer`.
 
     Raises:
-        ValueError: If `factor` is outside `[0.1, 2.0]`, or if `image_intensity_range` is invalid.
+        ValueError: If `factor` is outside `[-1.0, 1.0]`, or if `image_intensity_range` is invalid.
         TypeError: If `factor` is not a float, tuple, or list.
     """
+
 
     _FACTOR_VALIDATION_ERROR = (
         "The `factor` argument should be a number (or a list of two numbers) "
@@ -2144,8 +2152,8 @@ class RandomBrightness(AugmentationLayer):
         "The `image_intensity_range` argument should be a tuple of two numbers. ")
 
     def __init__(self,
-                 factor: Union[float, List, Tuple] = (0.1, 0.5),
-                 image_intensity_range=(0.0, 255.0),
+                 factor: Union[float, List, Tuple] = (0.0, 0.15),
+                 image_intensity_range=(0, 255),
                  image_key: str = 'images',
                  target_key: str = 'targets',
                  bounding_box_key: str = "bounding_boxes",
@@ -2161,12 +2169,13 @@ class RandomBrightness(AugmentationLayer):
                          **kwargs)
 
         # check if factor is outside the acceptable range
-        check_input(factor, name='factor', input_range=(0.10, 2.0))
+        check_input(factor, name='factor', input_range=(-1.0, 1.0))
 
         # convert the custom input factor to be within the tensorflow range
         factor = interpolate_to_tensorflow_value(
             custom_value=factor,
-            custom_datapoints=[-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
+            # custom_datapoints=[-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
+            custom_datapoints=[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0],
             tensorflow_datapoints=[-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0])
 
         self.image_intensity_range = image_intensity_range
@@ -2271,9 +2280,13 @@ class RandomContrast(AugmentationLayer):
         TensorShape([1, 128, 128, 3])
 
     Arguments:
-        :param factor: A positive float, or a tuple/list of two floats. Values should be in the range `[0.1, 1.0]`.
-            If a single float is provided, it is treated as both the lower and upper bound.
-            The contrast factor is randomly sampled from `[1.0 - factor, 1.0 + factor]`.
+        :param factor: a positive float represented as fraction of value, or a tuple of
+            size 2 representing lower and upper bound.
+            When represented as a single float, lower = upper.
+            The contrast factor will be randomly picked between
+            `[1.0 - lower, 1.0 + upper]`. For any pixel x in the channel,
+            the output will be `(x - mean) * factor + mean`
+            where `mean` is the mean value of the channel.
         :param active: If False, the layer performs no augmentation and passes inputs unchanged.
         :param seed: Optional random seed for reproducibility.
         :param image_intensity_range: Tuple or list of two floats, specifying the minimum and maximum pixel intensity.
@@ -2293,10 +2306,9 @@ class RandomContrast(AugmentationLayer):
         "The `value_range` argument should be a tuple of two numbers. ")
 
     def __init__(self,
-                 factor: Union[float, List[float], Tuple[float, float]] = (0.1, 1.0),
+                 factor: Union[float, List[float], Tuple[float, float]]=(0.1, 1.0),
                  active: bool = True,
-                 seed: int = None,
-                 image_intensity_range=(0, 255),
+                 image_intensity_range= (0, 255),
                  image_key: str = 'images',
                  target_key: str = 'targets',
                  bounding_box_key: str = "bounding_boxes",
@@ -2304,13 +2316,23 @@ class RandomContrast(AugmentationLayer):
                  name='random_contrast',
                  **kwargs):
         super().__init__(active=active,
-                         seed=seed,
                          image_key=image_key,
                          target_key=target_key,
                          bounding_box_key=bounding_box_key,
                          batches_before_aug=batches_before_aug,
                          name=name,
                          **kwargs)
+
+        self.check_parameter_type({
+            'factor': (factor, (int, tuple), False),
+            'image_intensity_range': (image_intensity_range, tuple, False),
+            'active': (active, bool, False),
+            'name': (name, str, False),
+            'image_key': (image_key, str, False),
+            'target_key': (target_key, str, False),
+            'bounding_box_key': (bounding_box_key, str, False),
+            'batches_before_aug': (batches_before_aug, int, True),
+        })
 
         self.factor = factor
         if isinstance(factor, (tuple, list)):
@@ -2334,34 +2356,30 @@ class RandomContrast(AugmentationLayer):
             raise ValueError(
                 self._VALUE_RANGE_VALIDATION_ERROR + f"Got {image_intensity_range}")
 
-        self.seed = seed
         self.clip_value_range = sorted(image_intensity_range)
 
-    def augment_image(self, image, transformation):
+    def get_random_transformation(self, image=None, label=None, bounding_box=None):
+        batch_size = tf.shape(image)[0]
+        adjust_contrast = tf.random.uniform(shape=[batch_size, 1, 1, 1], minval=0, maxval=1.0) < 0.5
+        contrast_factor = tf.random.uniform(shape=[batch_size, 1, 1, 1],
+                                            minval=1.0 - self.lower,
+                                            maxval=1.0 + self.upper)
 
-        def random_contrasted_inputs(inputs):
-            seed = self._random_generator.make_seed_for_stateless_op()
-            if seed is not None:
-                output = tf.image.stateless_random_contrast(
-                    image=inputs,
-                    lower=1.0 - self.lower,
-                    upper=1.0 + self.upper,
-                    seed=seed
-                )
-            else:
-                output = tf.image.random_contrast(
-                    image=inputs,
-                    lower=1.0 - self.lower,
-                    upper=1.0 + self.upper,
-                    seed=self._random_generator.make_legacy_seed()
-                )
-            output = tf.clip_by_value(t=output,
+        return {'adjust_contrast': adjust_contrast,
+                'contrast_factor': contrast_factor}
+
+    def augment_image(self, image, transformation):
+        adjust_contrast = transformation['adjust_contrast']
+        contrast_factor = transformation['contrast_factor']
+
+        mean = tf.reduce_mean(image, axis=[1, 2], keepdims=True)
+        contrasted = (image - mean) * contrast_factor + mean
+        contrasted = tf.clip_by_value(contrasted,
                                       clip_value_min=self.clip_value_range[0],
                                       clip_value_max=self.clip_value_range[1])
-            return output
 
-        # wrap in `tf.stop_gradient` to make AdjustContrastV2 Non-differentiable
-        return tf.stop_gradient(random_contrasted_inputs(image))
+        return tf.where(condition=adjust_contrast, x=contrasted, y=image)
+
 
     def augment_label(self, label, transformation):
         return label
@@ -2372,7 +2390,7 @@ class RandomContrast(AugmentationLayer):
     def get_config(self):
         config = super().get_config()
         config.update({"factor": self.factor,
-                       "image_intensity_range": self.value_range,
+                       "image_intensity_range": self.clip_value_range,
                        })
         return config
 
