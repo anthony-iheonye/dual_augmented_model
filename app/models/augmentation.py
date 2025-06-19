@@ -19,8 +19,16 @@ class AugmentedModel(tf.keras.Model):
     to image-mask (and optionally bounding box) pairs using a unified interface. It wraps a
     user-defined base model, applying augmentation only during training.
 
-    To apply augmentation on the targets, the targets must either be 3D or 4D tensors (i.e., shape `[H, W, C]` or `[B, H, W, C]`). If `targets` are scalar (e.g., shape `[B]`), they will
-    be passed through unchanged.
+    During training and evaluation, the model expects a dictionary input with at least an
+    `image_key` (e.g., 'images') and  `target_key` (e.g., 'targets'), optionally `bounding_boxes` key.
+    Both 'images' and 'targets' should be 3D or 4D tensors ([H, W, C] or [B, H, W, C]).
+    Scalar or 1D/2D targets (e.g., classification labels or regression outputs) are passed through unchanged
+    and not augmented.
+
+    During inference (i.e., training=False), the input can be either a dictionary {image_key: image_batch}
+    or a raw 4D Tensor of shape [B, H, W, C]. If the model is compiled with loss functions requiring expanded
+    labels (e.g., categorical crossentropy), 3D/4D masks will be one-hot encoded internally using num_of_classes.
+    Augmentations are only applied during training unless `augment_on_eval`=True.
 
     Supported Transformations:
         - Horizontal Flip
@@ -65,6 +73,7 @@ class AugmentedModel(tf.keras.Model):
     :param batches_before_aug: (Optional[int]): Number of batches input data to pass through the
         model (per epoch), before initiating augmentation. For instance, is to be trained with 200 batches of images/masks per epoch (steps_per_epoch = 250), and the batches_before_aug is set
         to 50, at the start of each epoch, the first 50 batches will be not be augmented, while the remaining 150 batches will be augmented. This technique ensures the model learns patterns from all the original and augmented data.
+    :param augment_on_eval: (bool) If True, data augmentation would be apply during model evaluation.
     :param flip: (bool): Enable random flipping. Default: False.
     :param flip_mode: (str): Flip direction. Options:
             - 'HORIZONTAL': left-right flip
@@ -129,6 +138,7 @@ class AugmentedModel(tf.keras.Model):
                  target_key: str = 'targets',
                  bounding_box_key: str = 'bounding_boxes',
                  batches_before_aug: Optional[int] = None,
+                 augment_on_eval: bool = False,
                  flip: bool = False,
                  flip_mode: str = 'HORIZONTAL_AND_VERTICAL',
                  rotate: bool = False,
@@ -162,6 +172,7 @@ class AugmentedModel(tf.keras.Model):
         self.target_key = target_key
         self.bounding_box_key = bounding_box_key
         self.batches_before_aug = batches_before_aug
+        self.augment_on_eval = augment_on_eval
 
         self.num_of_classes = num_of_classes
         self.flip = flip
@@ -287,6 +298,35 @@ class AugmentedModel(tf.keras.Model):
         # Run backwards pass.
         self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
         return self.compute_metrics(x, target, y_pred, sample_weight)
+
+    def test_step(self, data):
+        if self.augment_on_eval:
+            return self.test_step_with_augmentation(data)
+        else:
+            return self.test_step_no_augmentation(data)
+
+    def test_step_with_augmentation(self, data):
+        x, y, sample_weight = self.unpack_x_y_sample_weight(data)
+        inputs = self.combine_images_targets(x, y)
+
+        # Run forward pass.
+        y_pred, target = self(inputs=inputs, training=True)
+
+        # update stateful loss metrics
+        self.compute_loss(x, target, y_pred, sample_weight)
+
+        return self.compute_metrics(x, target, y_pred, sample_weight)
+
+    def test_step_no_augmentation(self, data):
+        x, y, sample_weight = self.unpack_x_y_sample_weight(data)
+        y = self.expand_label_axis(y)
+
+        y_pred = self(x, training=False)
+        # Updates stateful loss metrics.
+        self.compute_loss(x, y, y_pred, sample_weight)
+        return self.compute_metrics(x, y, y_pred, sample_weight)
+
+
 
     def combine_images_targets(self, x, y):
         """
