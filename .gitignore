@@ -115,3 +115,5 @@ morph-and-split-toolkit-key.json
 /temp/dual_augmentation.py
 /temp/
 /old_augment_code.py
+/train_cache/
+/val_cache/
