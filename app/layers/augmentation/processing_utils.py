@@ -2,7 +2,8 @@ import keras
 import tensorflow as tf
 from keras.src.layers.preprocessing import preprocessing_utils as utils
 from tensorflow.keras.layers import Layer
-from .image_target_processing import AugmentationLayer
+
+from app.layers.augmentation.image_target_processing import AugmentationLayer
 
 
 @keras.saving.register_keras_serializable(package='Augmentation', name='SplitImageTarget')
@@ -16,6 +17,11 @@ class SplitImageTarget(tf.keras.layers.Layer):
     Example:
         input = {'images': <image_tensor>, 'targets': <mask_tensor>}
         output = (<image_tensor>, <mask_tensor>)
+
+    :param image_key: str, the key used to retrieve the image tensor from the input dictionary.
+    :param target_key: str, the key used to retrieve the target (e.g., mask) tensor from the input dictionary.
+    :param name: str, name of the layer.
+    :param kwargs: Additional keyword arguments passed to the base Layer class.
     """
 
     def __init__(self,
@@ -23,14 +29,6 @@ class SplitImageTarget(tf.keras.layers.Layer):
                  target_key: str = 'targets',
                  name='splitImageMask',
                  **kwargs):
-        """
-        Initializes the SplitImageTarget layer.
-
-        :param image_key: str, the key used to retrieve the image tensor from the input dictionary.
-        :param target_key: str, the key used to retrieve the target (e.g., mask) tensor from the input dictionary.
-        :param name: str, name of the layer.
-        :param kwargs: Additional keyword arguments passed to the base Layer class.
-        """
         super(SplitImageTarget, self).__init__(name=name, trainable=False, **kwargs)
         self.image_key = image_key
         self.target_key = target_key
@@ -43,12 +41,66 @@ class SplitImageTarget(tf.keras.layers.Layer):
                        Expected to have keys matching `self.image_key` and `self.target_key`.
         :return: Tuple (image_tensor, target_tensor)
         """
-        return inputs[self.image_key], inputs[self.target_key]
+        image = inputs.get(self.image_key, None)
+        target = inputs.get(self.target_key, None)
+        return image, target
 
     def get_config(self):
         config = super().get_config()
         config.update({'image_key': self.image_key,
                        'target_key': self.target_key})
+        return config
+
+
+@keras.saving.register_keras_serializable(package='Augmentation', name='SplitImageTargetSampleWeight')
+class SplitImageTargetSampleWeight(tf.keras.layers.Layer):
+    """
+    A utility Keras layer that extracts and returns image, target and sample weight tensors from a dictionary input.
+
+    This layer is useful in preprocessing pipelines where inputs are passed as dictionaries
+    (e.g., from tf.data or custom augmentation layers), and models expect separate (image, target) tuples.
+
+    Example:
+        input = {'images': <image_tensor>, 'targets': <mask_tensor>}
+        output = (<image_tensor>, <mask_tensor>)
+
+    :param image_key: str, the key used to retrieve the image tensor from the input dictionary.
+    :param target_key: str, the key used to retrieve the target (e.g., mask) tensor from the input dictionary.
+    :param sample_weight_key: str, the key used to retrieve the sample weight (e.g., 'sample_weight') tensor
+        from the input dictionary.
+    :param name: str, name of the layer.
+    :param kwargs: Additional keyword arguments passed to the base Layer class.
+    """
+
+    def __init__(self,
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 sample_weight_key: str = 'sample_weight',
+                 name='splitImageMask',
+                 **kwargs):
+        super().__init__(name=name, trainable=False, **kwargs)
+        self.image_key = image_key
+        self.target_key = target_key
+        self.sample_weight_key = sample_weight_key
+
+    def call(self, inputs, **kwargs):
+        """
+        Splits a dictionary input into a tuple of (image, target) tensors.
+
+        :param inputs: dict, a dictionary containing image and target tensors.
+                       Expected to have keys matching `self.image_key` and `self.target_key`.
+        :return: Tuple (image_tensor, target_tensor)
+        """
+        image = inputs.get(self.image_key, None)
+        target = inputs.get(self.target_key, None)
+        sample_weight = inputs.get(self.sample_weight_key, None)
+        return image, target, sample_weight
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({'image_key': self.image_key,
+                       'target_key': self.target_key,
+                       'sample_weight_key': self.sample_weight_key})
         return config
 
 
@@ -175,7 +227,3 @@ class NormalizeImage(AugmentationLayer):
         config = super().get_config()
         config.update({'scale_to_0_1': self.scale_to_0_1})
         return config
-
-
-
-
