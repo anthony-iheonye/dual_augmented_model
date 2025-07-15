@@ -1,5 +1,4 @@
 from typing import List
-from typing import List
 from typing import Tuple, Union, Optional, Dict, Type, Any
 
 import keras
@@ -467,7 +466,8 @@ class AugmentationLayer(base_layer.BaseRandomLayer):
         return self.augment_label(target, transformation)
 
     @doc_controls.for_subclass_implementers
-    def augment_bounding_boxes(self, images,
+    def augment_bounding_boxes(self,
+                               images,
                                bounding_boxes,
                                transformation: Optional[Dict[str, Any]] = None):
         """Augment bounding boxes for one image during training.
@@ -749,6 +749,123 @@ class AugmentationLayer(base_layer.BaseRandomLayer):
         return cls(**config)
 
 
+@keras.saving.register_keras_serializable(package='Augmentation', name='SampleWeight')
+class SampleWeight(AugmentationLayer):
+    """
+    A preprocessing layer that computes a per-pixel sample weight map based on the inverse class frequency
+    of the segmentation mask.
+
+    This is typically used to address class imbalance in semantic segmentation tasks by assigning higher
+    weights to pixels belonging to underrepresented classes.
+
+    Example:
+        >>> layer = SampleWeight(num_classes=5)
+        >>> inputs = {
+        >>>     'images': tf.ones([1, 128, 128, 3]),
+        >>>     'targets': tf.random.uniform([1, 128, 128, 1], minval=0, maxval=5, dtype=tf.int32)
+        >>> }
+        >>> outputs = layer(inputs)
+
+    Args:
+        num_classes (int): Total number of distinct classes in the segmentation task.
+        active (bool): Whether the layer should be active during training/inference.
+        image_key (str): Dictionary key to access the input image tensor.
+        target_key (str): Dictionary key to access the segmentation mask tensor.
+        bounding_box_key (str): Dictionary key to access optional bounding box data.
+        sample_weight_key (str): Key under which to store the computed sample weight map.
+        name (str): Name of the layer.
+    """
+    def __init__(self,
+                 num_classes: int,
+                 active: bool = False,
+                 image_key: str = 'images',
+                 target_key: str = 'targets',
+                 bounding_box_key: str = "bounding_boxes",
+                 name: str = 'sample_weight',
+                 ):
+        super().__init__(active=active,
+                         name=name,
+                         image_key=image_key,
+                         target_key=target_key,
+                         bounding_box_key=bounding_box_key)
+
+        self.sample_weight_key = 'sample_weight'
+        self.num_classes = num_classes
+
+    def __repr__(self):
+        return f"{self.sample_weight_key}"
+
+    def _augment(self, inputs: Dict):
+        """
+        Computes the sample weight map and injects it into the input dictionary under `self.sample_weight_key`.
+
+        If the target mask is batched, weights are computed per-sample using `tf.map_fn`.
+        If the target is a categorical vector or label, no weight map is generated.
+
+        Args:
+            inputs (dict): A dictionary containing keys for images and targets.
+
+        Returns:
+            dict: The same dictionary with an additional key for the computed sample weight map.
+        """
+
+        target = inputs.get(self.target_key, None)
+
+        if target is not None and isinstance(target, tf.Tensor):
+            original_target_shape = target.shape
+            temp_target, target_was_unbatched = self.ensure_batched(target)
+
+            if self.is_batched(temp_target):
+                sample_weight = tf.map_fn(fn=self.compute_single_sample_weight_map,
+                                          elems=temp_target,
+                                          fn_output_signature=tf.TensorSpec(shape=temp_target.shape[1:],
+                                                                            dtype=tf.float32))
+                if target_was_unbatched:
+                    sample_weight = tf.squeeze(sample_weight, axis=0)
+                    sample_weight.set_shape(original_target_shape)
+
+                inputs[self.sample_weight_key] = sample_weight
+            elif target.shape.rank > 2 and target.shape[-1] > 1:
+                raise ValueError(f"The shape of the target(s) must be in the form "
+                                 f"[Height, Width, 1], got {target.shape}.")
+            else:
+                # Skip sample weight computation if it's a 1D/2D categorical target
+                inputs[self.sample_weight_key] = None
+
+        return inputs
+
+    def compute_single_sample_weight_map(self, mask):
+        """
+        Computes a per-pixel weight map for a single mask using inverse class frequency.
+
+        Args:
+            mask (tf.Tensor): A 3D tensor [H, W, 1] or [H, W] containing class indices.
+
+        Returns:
+            tf.Tensor: A 3D tensor [H, W, 1] where each pixel's value represents its class weight.
+        """
+
+        # Flatten mask to 1D
+        flat_mask = tf.cast(x=tf.reshape(tensor=mask, shape=[-1]), dtype=tf.int32)
+
+        # Count frequency of each class
+        class_counts = tf.math.bincount(arr=flat_mask,
+                                        minlength=self.num_classes,
+                                        maxlength=self.num_classes,
+                                        dtype=tf.float32)
+
+        # Mask out zero entries to avoid division by zero
+        present_mask = class_counts > 0
+        inv_freq = tf.where(condition=present_mask, x=1.0/class_counts, y=tf.zeros_like(class_counts))
+
+        # Normalize weights so that present class weights sum to 1.
+        norm_weights = inv_freq / tf.reduce_sum(inv_freq)
+
+        # Map each pixel label to its class weight
+        weight_map = tf.gather(norm_weights, mask)
+        return weight_map
+
+
 @keras.saving.register_keras_serializable(package='Augmentation', name='RandomRotation')
 class RandomRotation(AugmentationLayer):
     """
@@ -894,7 +1011,7 @@ class RandomRotation(AugmentationLayer):
                            )
         return output
 
-    def augment_bounding_boxes(self, images, bounding_boxes, transformation):
+    def augment_bounding_boxes(self, images, bounding_boxes, transformation=None):
         """
         Applies rotation to bounding boxes for a batch of images.
 
@@ -2152,6 +2269,7 @@ class RandomBrightness(AugmentationLayer):
         "The `image_intensity_range` argument should be a tuple of two numbers. ")
 
     def __init__(self,
+                 active: bool = False,
                  factor: Union[float, List, Tuple] = (0.0, 0.15),
                  image_intensity_range=(0, 255),
                  image_key: str = 'images',
@@ -2160,8 +2278,8 @@ class RandomBrightness(AugmentationLayer):
                  batches_before_aug: Optional[int] = None,
                  name: str = 'random_brightness',
                  **kwargs):
-        base_preprocessing_layer.keras_kpl_gauge.get_cell("RandomDualBrightness").set(True)
-        super().__init__(image_key=image_key,
+        super().__init__(active=active,
+                         image_key=image_key,
                          target_key=target_key,
                          bounding_box_key=bounding_box_key,
                          batches_before_aug=batches_before_aug,
@@ -2936,6 +3054,7 @@ class RandomAugmentationLayer(Layer):
 
     :param name: Name of the layer instance.
     :param kwargs: Additional layer keyword arguments.
+    :returns: Dictonary with keys: image_key, target_key and optionally sample_weight.
     """
 
     def __init__(self,
@@ -2954,7 +3073,7 @@ class RandomAugmentationLayer(Layer):
                  use_gaussian_noise: bool = False,
                  gaussian_range: Union[float, List[float], Tuple[float, float]] = (0.0, 0.01),
                  adjust_brightness: bool = False,
-                 brightness_range: Union[float, list, tuple] = (0.90, 1.10),
+                 brightness_range: Union[float, list, tuple] = (0.90, 1.0),
                  adjust_contrast: bool = False,
                  contrast_range: Union[float, List[float], Tuple[float, float]]=(0.1, 1.0),
                  jitter: bool = False,
@@ -2994,8 +3113,8 @@ class RandomAugmentationLayer(Layer):
         self.fill_value = fill_value
 
 
-        self.flip_layer = RandomFlip(mode=self.flip_mode,
-                                     active=self.flip,
+        self.flip_layer = RandomFlip(active=self.flip,
+                                     mode=self.flip_mode,
                                      image_key = self.image_key,
                                      target_key= self.target_key,
                                      bounding_box_key= self.bounding_box_key,
@@ -3017,25 +3136,25 @@ class RandomAugmentationLayer(Layer):
                                             batches_before_aug=self.batches_before_aug,
                                             name='affine_transform')
 
-        self.noise_layer = RandomGaussianNoise(stddev=gaussian_range,
-                                               active=self.use_gaussian_noise,
+        self.noise_layer = RandomGaussianNoise(active=self.use_gaussian_noise,
+                                               stddev=gaussian_range,
                                                image_key=self.image_key,
                                                target_key=self.target_key,
                                                bounding_box_key=self.bounding_box_key,
                                                batches_before_aug=self.batches_before_aug,
                                                name='gaussian_noise')
 
-        self.brightness_layer = RandomBrightness(factor=brightness_range,
+        self.brightness_layer = RandomBrightness(active=self.adjust_brightness,
+                                                 factor=brightness_range,
                                                  image_intensity_range=image_intensity_range,
-                                                 active=self.adjust_brightness,
                                                  image_key=self.image_key,
                                                  target_key=self.target_key,
                                                  bounding_box_key=self.bounding_box_key,
                                                  batches_before_aug=self.batches_before_aug,
                                                  name='brightness')
 
-        self.contrast_layer = RandomContrast(factor=contrast_range,
-                                             active=self.adjust_contrast,
+        self.contrast_layer = RandomContrast(active=self.adjust_contrast,
+                                             factor=contrast_range,
                                              image_key=self.image_key,
                                              target_key=self.target_key,
                                              bounding_box_key=self.bounding_box_key,
@@ -3069,8 +3188,6 @@ class RandomAugmentationLayer(Layer):
 
     def call(self, inputs, training=None):
         """
-        :param augment:
-        :param training:
         :param inputs: a tuple containing the images and targets
         :return: a dictionary of {'images': inputs[0], 'targets': inputs[1]}
         """
@@ -3109,13 +3226,9 @@ class RandomAugmentationLayer(Layer):
                   "brightness_range": self.brightness_range,
                   "jitter": self.apply_jitter,
                   "jitter_range": self.jitter_range,
-                  "center_crop": self.center_crop,
-                  "output_height": self.output_height,
-                  "output_width": self.output_width,
                   "fill_mode": self.fill_mode,
                   "interpolation": self.interpolation,
                   'image_intensity_range': self.value_range,
                   "fill_value": self.fill_value}
         base_config.update(config)
         return base_config
-
