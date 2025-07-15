@@ -5,7 +5,13 @@ import keras
 import matplotlib.pyplot as plt
 import tensorflow as tf
 
-from app.layers.augmentation import (RandomAugmentationLayer, PassThroughLayer, NormalizeImage, SplitImageTarget)
+from app.layers.augmentation import (RandomAugmentationLayer,
+                                     PassThroughLayer,
+                                     NormalizeImage,
+                                     SplitImageTarget,
+                                     ReturnNoneLayer,
+                                     SampleWeight)
+
 from app.layers.segmenter import ExpandLabelAxis
 from app.utils.directory_file_management import dirs
 
@@ -19,16 +25,8 @@ class AugmentedModel(tf.keras.Model):
     to image-mask (and optionally bounding box) pairs using a unified interface. It wraps a
     user-defined base model, applying augmentation only during training.
 
-    During training and evaluation, the model expects a dictionary input with at least an
-    `image_key` (e.g., 'images') and  `target_key` (e.g., 'targets'), optionally `bounding_boxes` key.
-    Both 'images' and 'targets' should be 3D or 4D tensors ([H, W, C] or [B, H, W, C]).
-    Scalar or 1D/2D targets (e.g., classification labels or regression outputs) are passed through unchanged
-    and not augmented.
-
-    During inference (i.e., training=False), the input can be either a dictionary {image_key: image_batch}
-    or a raw 4D Tensor of shape [B, H, W, C]. If the model is compiled with loss functions requiring expanded
-    labels (e.g., categorical crossentropy), 3D/4D masks will be one-hot encoded internally using num_of_classes.
-    Augmentations are only applied during training unless `augment_on_eval`=True.
+    To apply augmentation on the targets, the targets must either be 3D or 4D tensors (i.e., shape `[H, W, C]` or `[B, H, W, C]`). If `targets` are scalar (e.g., shape `[B]`), they will
+    be passed through unchanged.
 
     Supported Transformations:
         - Horizontal Flip
@@ -70,10 +68,13 @@ class AugmentedModel(tf.keras.Model):
     :param target_key: (str): Key used to extract target tensors from the dictionary-based tf input
         Dataset.
     :param bounding_box_key: (str): Key used to extract bounding boxes, if available.
-    :param batches_before_aug: (Optional[int]): Number of batches input data to pass through the
-        model (per epoch), before initiating augmentation. For instance, is to be trained with 200 batches of images/masks per epoch (steps_per_epoch = 250), and the batches_before_aug is set
-        to 50, at the start of each epoch, the first 50 batches will be not be augmented, while the remaining 150 batches will be augmented. This technique ensures the model learns patterns from all the original and augmented data.
-    :param augment_on_eval: (bool) If True, data augmentation would be apply during model evaluation.
+    :param batches_before_aug: (Optional[int]): Number of batches of input data to pass through the
+        model (per epoch), before initiating augmentation. For instance, if the model is to be trained with 200 batches of images/masks per epoch (steps_per_epoch = 200), and the batches_before_aug is set
+        to 50, at the start of each epoch, the first 50 batches will not be augmented, while the remaining 150 batches will be augmented. This technique ensures the model learns patterns from all the original and augmented data.
+    :param augment_on_eval: (bool) If True, data augmentation would be applied during model evaluation.
+    :param compute_sample_weights: (bool): Whether to generate a sample weight map per batch
+        based on class imbalance. If True, it activates the `SampleWeight` layer.
+
     :param flip: (bool): Enable random flipping. Default: False.
     :param flip_mode: (str): Flip direction. Options:
             - 'HORIZONTAL': left-right flip
@@ -139,6 +140,7 @@ class AugmentedModel(tf.keras.Model):
                  bounding_box_key: str = 'bounding_boxes',
                  batches_before_aug: Optional[int] = None,
                  augment_on_eval: bool = False,
+                 compute_sample_weights: bool = False,
                  flip: bool = False,
                  flip_mode: str = 'HORIZONTAL_AND_VERTICAL',
                  rotate: bool = False,
@@ -173,6 +175,7 @@ class AugmentedModel(tf.keras.Model):
         self.bounding_box_key = bounding_box_key
         self.batches_before_aug = batches_before_aug
         self.augment_on_eval = augment_on_eval
+        self.compute_sample_weights = compute_sample_weights
 
         self.num_of_classes = num_of_classes
         self.flip = flip
@@ -229,6 +232,12 @@ class AugmentedModel(tf.keras.Model):
 
         self.expand_label_axis = ExpandLabelAxis(num_classes=num_of_classes)
 
+        if compute_sample_weights:
+            self.sample_weight_layer = SampleWeight(num_classes=num_of_classes,
+                                                    active=compute_sample_weights)
+        else:
+            self.sample_weight_layer = ReturnNoneLayer()
+
         if normalize:
             self.normalizer = NormalizeImage(active=normalize, scale_to_0_1=scale_to_0_1)
         else:
@@ -238,17 +247,13 @@ class AugmentedModel(tf.keras.Model):
 
         if training:
             image_target_dict = self.augmenter(inputs, training=training)
-            # image_target_dict = self.normalizer(image_target_dict)
 
             # Extract images and targets batch from dictionary
             images, targets = self.split_image_target(image_target_dict)
 
-            # Assign each target class to a separate channel. If the target
-            # is not 3D or 4D, it will be returned untorched.
-            targets = self.expand_label_axis(targets)
-
             # Normalizer images (if activated)
             images = self.normalizer(images)
+
             # Forward pass
             y_pred = self.base_model(images)
 
@@ -285,12 +290,18 @@ class AugmentedModel(tf.keras.Model):
           `{'loss': 0.2, 'accuracy': 0.7}`.
         """
 
-        x, y, sample_weight = self.unpack_x_y_sample_weight(data)
+        x, y = self.unpack_x_y_sample_weight(data)
+        sample_weight = None
         inputs = self.combine_images_targets(x, y)
 
         # Run forward pass.
         with tf.GradientTape() as tape:
             y_pred, target = self(inputs=inputs, training=True)
+            sample_weight = self.sample_weight_layer(inputs=target, training=True)
+
+            # Assign each target class to a separate channel. If the target
+            # is not 3D or 4D, it will be returned untorched.
+            target = self.expand_label_axis(target)
             loss = self.compute_loss(x, target, y_pred, sample_weight)
 
         self._validate_target_and_loss(y=target, loss=loss)
@@ -306,11 +317,16 @@ class AugmentedModel(tf.keras.Model):
             return self.test_step_no_augmentation(data)
 
     def test_step_with_augmentation(self, data):
-        x, y, sample_weight = self.unpack_x_y_sample_weight(data)
+        x, y = self.unpack_x_y_sample_weight(data)
         inputs = self.combine_images_targets(x, y)
+        sample_weight = None
 
         # Run forward pass.
         y_pred, target = self(inputs=inputs, training=True)
+
+        # Assign each target class to a separate channel. If the target
+        # is not 3D or 4D, it will be returned untorched.
+        target = self.expand_label_axis(target)
 
         # update stateful loss metrics
         self.compute_loss(x, target, y_pred, sample_weight)
@@ -318,15 +334,17 @@ class AugmentedModel(tf.keras.Model):
         return self.compute_metrics(x, target, y_pred, sample_weight)
 
     def test_step_no_augmentation(self, data):
-        x, y, sample_weight = self.unpack_x_y_sample_weight(data)
+        x, y = self.unpack_x_y_sample_weight(data)
+        sample_weight = None
+
+        # Assign each target class to a separate channel. If the target
+        # is not 3D or 4D, it will be returned untorched.
         y = self.expand_label_axis(y)
 
         y_pred = self(x, training=False)
         # Updates stateful loss metrics.
         self.compute_loss(x, y, y_pred, sample_weight)
         return self.compute_metrics(x, y, y_pred, sample_weight)
-
-
 
     def combine_images_targets(self, x, y):
         """
@@ -461,21 +479,17 @@ class AugmentedModel(tf.keras.Model):
         if isinstance(data, dict):
             image = data.get(self.image_key)
             target = data.get(self.target_key)
-            sample_weight = data.get('sample_weight')
-            return image, target, sample_weight
+            return image, target
 
         if not isinstance(data, tuple):
-            return data, None, None
+            return data, None
         elif len(data) == 1:
-            return data[0], None, None
+            return data[0], None
         elif len(data) == 2:
-            return data[0], data[1], None
-        elif len(data) == 3:
-            return data[0], data[1], data[2]
+            return data[0], data[1]
         else:
             error_msg = (
-                "Data is expected to be in format `x`, `(x,)`, `(x, y)`, "
-                "or `(x, y, sample_weight)`, found: {}"
+                "Data is expected to be in format `x`, `(x,)`, `(x, y)`, or {`image_key`:tf.Tensor,`target_key`: tf.Tensor}, found: {}"
             ).format(data)
             raise ValueError(error_msg)
 
@@ -485,15 +499,19 @@ class AugmentedModel(tf.keras.Model):
         image = tf.image.decode_jpeg(image_data)
         return image
 
-    def preview_augmentation(self, input_data: Optional[Union[Dict[str, tf.Tensor], Tuple[Union[str, tf.Tensor]]]] = None) -> Optional[Tuple]:
+    def preview_augmentation(self, input_data: Optional[Union[Dict[str, tf.Tensor], Tuple[Union[str, tf.Tensor]]]] = None):
         """
-        Generates and displays augmented versions of a single image–target pair using the current augmentation pipeline.
+        Displays augmented versions of a single image–target pair using the current augmentation pipeline.
 
-        :param input_data: Optional. One of:
-                - dict with image-mask tensors {image_key: ...., target_key: ...}
-                - tuple of (image_path, target_path)
-                - tuple of (image_tensor, target_tensor)
-                - None -> loads default local sample
+        Parameters
+        ----------
+        input_data :
+            Optional. One of:
+
+            - A dictionary with image-mask tensors, e.g., `{image_key: ..., target_key: ...}`
+            - A tuple of `(image_path, target_path)` as strings
+            - A tuple of `(image_tensor, target_tensor)` as tensors
+            - `None` → loads a default local sample
         """
 
 
