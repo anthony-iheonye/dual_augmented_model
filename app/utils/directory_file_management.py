@@ -10,15 +10,17 @@ base_dir = os.path.abspath(os.path.join(current_dir, '../..'))
 @attr.s
 class DirectoryStore:
     asset_dir = attr.ib(type=str, init=False)
+    preview_dir = attr.ib(type=str, init=False)
 
-    image_dir = attr.ib(type=str, init=False)
-    mask_dir = attr.ib(type=str, init=False)
+    preview_image = attr.ib(type=str, init=False)
+    preview_mask = attr.ib(type=str, init=False)
 
     def __attrs_post_init__(self):
         # Set the paths that depend on other attributes
         self.asset_dir = os.path.join(base_dir, 'assets')
-        self.image_dir = os.path.join(self.asset_dir,  'images')
-        self.mask_dir = os.path.join(self.asset_dir, 'masks')
+        self.preview_dir = os.path.join(self.asset_dir, 'aug_preview')
+        self.preview_image = os.path.join(self.preview_dir,  'image.jpg')
+        self.preview_mask = os.path.join(self.preview_dir, 'mask.jpg')
 
 dirs = DirectoryStore()
 
@@ -67,115 +69,6 @@ def delete_directory(dir_name, return_dir=False):
     else:
         print("Directory does not exist!")
         return None
-
-
-def create_project_directories(directory_store: DirectoryStore, return_dir=True, overwrite_if_existing=False):
-    """
-    Create a directory for the uploaded images and masks, for the augmented training, validation and testing datasets.
-    :returns: dictionary with keys 'image_dir', 'mask_dir', 'train_dir', 'val_dir' and 'test_dir'.
-    """
-    # Directory setup
-    image_dir = create_directory(dir_name=directory_store.image_dir,
-                                 return_dir=True,
-                                 overwrite_if_existing=overwrite_if_existing)
-
-    mask_dir = create_directory(dir_name=directory_store.mask_dir,
-                                return_dir=True,
-                                overwrite_if_existing=overwrite_if_existing)
-
-    resized_image_dir = create_directory(dir_name=directory_store.resized_image_dir,
-                                         return_dir=True,
-                                         overwrite_if_existing=overwrite_if_existing)
-
-    resized_mask_dir = create_directory(dir_name=directory_store.resized_mask_dir,
-                                        return_dir=True,
-                                        overwrite_if_existing=overwrite_if_existing)
-
-    augmented_dir = create_directory(dir_name=directory_store.augmented,
-                                     return_dir=True,
-                                     overwrite_if_existing=overwrite_if_existing)
-
-    train_image_dir = create_directory(dir_name=directory_store.train_image_dir,
-                                       return_dir=True,
-                                       overwrite_if_existing=overwrite_if_existing)
-
-    train_mask_dir = create_directory(dir_name=directory_store.train_mask_dir,
-                                      return_dir=True,
-                                      overwrite_if_existing=overwrite_if_existing)
-
-    val_image_dir = create_directory(dir_name=directory_store.val_image_dir,
-                                     return_dir=True,
-                                     overwrite_if_existing=overwrite_if_existing)
-
-    val_mask_dir = create_directory(dir_name=directory_store.val_mask_dir,
-                                    return_dir=True,
-                                    overwrite_if_existing=overwrite_if_existing)
-
-    test_image_dir = create_directory(dir_name=directory_store.test_image_dir,
-                                      return_dir=True,
-                                      overwrite_if_existing=overwrite_if_existing)
-
-    test_mask_dir = create_directory(dir_name=directory_store.test_mask_dir,
-                                     return_dir=True,
-                                     overwrite_if_existing=overwrite_if_existing)
-
-    visual_attribute_dir = create_directory(dir_name=directory_store.stratification_data_file_dir,
-                                            return_dir=True,
-                                            overwrite_if_existing=overwrite_if_existing)
-
-    if return_dir:
-        return {'image_dir': image_dir,
-                'mask_dir': mask_dir,
-                'resized_image_dir': resized_image_dir,
-                'resized_mask_dir': resized_mask_dir,
-                'augmented_dir': augmented_dir,
-                'train_image_dir': train_image_dir,
-                'train_mask_dir': train_mask_dir,
-                'val_image_dir': val_image_dir,
-                'val_mask_dir': val_mask_dir,
-                'test_image_dir': test_image_dir,
-                'test_mask_dir': test_mask_dir,
-                'visual_attribute_dir': visual_attribute_dir}
-    return None
-
-
-def create_resized_augmentation_directories(directory_store: DirectoryStore, return_dir=True, overwrite_if_existing=False):
-    """
-    Create directory for resized augmented training, validation and testing datasets.
-    :returns: dictionary with keys 'image_dir', 'mask_dir', 'train_dir', 'val_dir' and 'test_dir'.
-    """
-
-    # Directory setup
-    resized_augmented_dir = create_directory(dir_name=directory_store.resized_augmented, return_dir=True,
-                                             overwrite_if_existing=overwrite_if_existing)
-
-    resized_train_image_dir = create_directory(dir_name=directory_store.resized_train_image_dir, return_dir=True,
-                                               overwrite_if_existing=overwrite_if_existing)
-
-    resized_train_mask_dir = create_directory(dir_name=directory_store.resized_train_mask_dir, return_dir=True,
-                                              overwrite_if_existing=overwrite_if_existing)
-
-    resized_val_image_dir = create_directory(dir_name=directory_store.resized_val_image_dir, return_dir=True,
-                                             overwrite_if_existing=overwrite_if_existing)
-
-    resized_val_mask_dir = create_directory(dir_name=directory_store.resized_val_mask_dir, return_dir=True,
-                                            overwrite_if_existing=overwrite_if_existing)
-
-    resized_test_image_dir = create_directory(dir_name=directory_store.resized_test_image_dir, return_dir=True,
-                                              overwrite_if_existing=overwrite_if_existing)
-
-    resized_test_mask_dir = create_directory(dir_name=directory_store.resized_test_mask_dir, return_dir=True,
-                                             overwrite_if_existing=overwrite_if_existing)
-
-    if return_dir:
-        return {'resized_augmented_dir': resized_augmented_dir,
-                'resized_train_image_dir': resized_train_image_dir,
-                'resized_train_mask_dir': resized_train_mask_dir,
-                'resized_val_image_dir': resized_val_image_dir,
-                'resized_val_mask_dir': resized_val_mask_dir,
-                'resized_test_image_dir': resized_test_image_dir,
-                'resized_test_mask_dir': resized_test_mask_dir}
-    return None
 
 
 def current_directory(file_path=None):
