@@ -16,7 +16,7 @@ from skimage.filters import (gaussian, threshold_otsu)
 from skimage.measure import label
 from skimage.segmentation import find_boundaries
 
-from app.utils import create_directory
+from utils import create_directory
 
 
 class ImageAndMaskDatasetBuilder:

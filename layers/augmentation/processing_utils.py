@@ -6,7 +6,7 @@ import tensorflow as tf
 from keras.src.layers.preprocessing import preprocessing_utils as utils
 from tensorflow.keras.layers import Layer
 
-from app.layers.augmentation.image_target_processing import AugmentationLayer
+from layers.augmentation.image_target_processing import AugmentationLayer
 
 
 @keras.saving.register_keras_serializable(package='Augmentation', name='SplitImageTarget')

@@ -5,7 +5,7 @@ from tensorflow.keras.layers import (Conv2D, Conv2DTranspose, MaxPool2D, Dropout
 from tensorflow.keras.layers import Layer
 from tensorflow.keras.saving import register_keras_serializable
 
-from app.utils.model_utils import L2Regularizer
+from utils.model_utils import L2Regularizer
 
 
 @register_keras_serializable(package='Unet', name='Conv2dBlock')

@@ -4,8 +4,8 @@ from tensorflow.keras import Model
 from tensorflow.keras.layers import (GlobalAveragePooling2D)
 from tensorflow.keras.saving import register_keras_serializable
 
-from app.layers.visual_attributes import (XceptionBackbone, VisualAttributeHead, Denormalizer)
-from app.utils.model_utils import ModelUtilities
+from layers.visual_attributes import (XceptionBackbone, VisualAttributeHead, Denormalizer)
+from utils.model_utils import ModelUtilities
 
 
 class VisualAttrConfig:

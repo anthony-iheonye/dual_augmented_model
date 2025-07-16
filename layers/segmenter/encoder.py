@@ -2,7 +2,7 @@ from tensorflow.keras.layers import Layer
 from tensorflow.keras.saving import register_keras_serializable
 from typing import Optional
 
-from app.layers.segmenter.conv_blocks import EncoderBlock
+from layers.segmenter.conv_blocks import EncoderBlock
 
 @register_keras_serializable(package='Unet', name='Encoder')
 class Encoder(Layer):

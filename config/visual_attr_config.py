@@ -1,4 +1,4 @@
-from ..models.visual_attributes import VisualAttrConfig
+from models.visual_attributes import VisualAttrConfig
 
 visual_attribute_config = [
     VisualAttrConfig('L', 0.5, 0.01, mean=56.16887621, std=3.416602627),

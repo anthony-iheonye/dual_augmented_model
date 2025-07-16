@@ -3,9 +3,9 @@ from typing import Optional, Tuple
 from tensorflow.keras import Model
 from tensorflow.keras.saving import register_keras_serializable
 
-from app.layers.segmenter import Decoder, Encoder, BottleNeck, PostProcessMask
-from app.layers.segmenter import ForegroundExtractor, MergeLabelAxis
-from app.utils import ModelUtilities, UNetTFModule
+from layers.segmenter import Decoder, Encoder, BottleNeck, PostProcessMask
+from layers.segmenter import ForegroundExtractor, MergeLabelAxis
+from utils import ModelUtilities, UNetTFModule
 
 
 @register_keras_serializable(package='Unet', name='Unet')

@@ -5,15 +5,15 @@ import keras
 import matplotlib.pyplot as plt
 import tensorflow as tf
 
-from app.layers.augmentation import (RandomAugmentationLayer,
-                                     PassThroughLayer,
-                                     NormalizeImage,
-                                     SplitImageTarget,
-                                     ReturnNoneLayer,
-                                     SampleWeight)
+from layers.augmentation import (RandomAugmentationLayer,
+                                 PassThroughLayer,
+                                 NormalizeImage,
+                                 SplitImageTarget,
+                                 ReturnNoneLayer,
+                                 SampleWeight)
 
-from app.layers.segmenter import ExpandLabelAxis
-from app.utils.directory_file_management import dirs
+from layers.segmenter import ExpandLabelAxis
+from utils.directory_file_management import dirs
 
 
 @keras.saving.register_keras_serializable(package='Augmentation', name='AugmentedModel')

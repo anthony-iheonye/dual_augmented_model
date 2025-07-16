@@ -3,7 +3,7 @@ from typing import Optional
 from tensorflow.keras.layers import Layer
 from tensorflow.keras.saving import register_keras_serializable
 
-from app.layers.segmenter.conv_blocks import Conv2dBlock
+from layers.segmenter.conv_blocks import Conv2dBlock
 
 
 @register_keras_serializable(package='Unet', name='BottleNeck')
