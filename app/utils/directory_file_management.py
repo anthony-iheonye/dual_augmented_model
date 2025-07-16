@@ -4,8 +4,9 @@ import shutil
 
 import attr
 
-current_dir = os.path.dirname(__file__)
-base_dir = os.path.abspath(os.path.join(current_dir, '../..'))
+# current_dir = os.path.dirname(__file__)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+base_dir = os.path.abspath(os.path.join(current_dir, '..'))
 
 @attr.s
 class DirectoryStore:
