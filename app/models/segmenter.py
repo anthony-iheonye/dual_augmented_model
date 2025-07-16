@@ -1,6 +1,5 @@
 from typing import Optional, Tuple
 
-import tensorflow as tf
 from tensorflow.keras import Model
 from tensorflow.keras.saving import register_keras_serializable
 
@@ -119,20 +118,21 @@ class UNet(Model, ModelUtilities):
         bottleneck = self.bottleneck(encoder_output)
         predicted_mask = self.decoder([bottleneck, convs])
 
-        if self.post_process:
-            # apply morphological operation on the predicted mask.
-            processed_2d_mask, processed_3d_mask = self.morphological_layer(predicted_mask)
-        else:
-            processed_2d_mask = tf.ones(tf.shape(predicted_mask), dtype=tf.float32)
-            processed_3d_mask = tf.ones(tf.shape(predicted_mask), dtype=tf.float32)
+        # if self.post_process:
+        #     # apply morphological operation on the predicted mask.
+        #     processed_2d_mask, processed_3d_mask = self.morphological_layer(predicted_mask)
+        # else:
+        #     processed_2d_mask = tf.ones(tf.shape(predicted_mask), dtype=tf.float32)
+        #     processed_3d_mask = tf.ones(tf.shape(predicted_mask), dtype=tf.float32)
 
         # return output as a dict if the inputs are supplied as dict in the tf.Dataset
         if self.return_dict:
             return {self.output_name: predicted_mask,
-                    'processed_mask': processed_3d_mask,
-                    'processed_2d_mask': processed_2d_mask,
+                    # 'processed_mask': processed_3d_mask,
+                    # 'processed_2d_mask': processed_2d_mask,
                     }
-        return predicted_mask, processed_3d_mask, processed_2d_mask
+        # return predicted_mask, processed_3d_mask, processed_2d_mask
+        return predicted_mask
 
     def segment(self, image_dict: dict):
         """Returns an RGB image containing only the objects of interest or foreground"""
@@ -144,8 +144,9 @@ class UNet(Model, ModelUtilities):
 
         # produce RGB image containing only foreground/objects of interest (e.g., infocus peas)
         if self.post_process:
-            foreground = self.foreground([mask['processed_2d_mask'],
-                                            image_dict['image']])
+            # apply morphological operation on the predicted mask.
+            processed_2d_mask, processed_3d_mask = self.morphological_layer(mask)
+            foreground = self.foreground([processed_2d_mask, image_dict['image']])
         else:
             predicted_2d_mask = self.merge_label_axis(mask[self.output_name])
             foreground = self.foreground([predicted_2d_mask, image_dict[self.input_name]])
@@ -179,5 +180,3 @@ class UNet(Model, ModelUtilities):
                        "area_threshold": self.area_threshold,
                        'name': self.name})
         return config
-
-
