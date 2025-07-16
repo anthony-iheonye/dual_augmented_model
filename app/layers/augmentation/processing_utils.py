@@ -6,7 +6,6 @@ import tensorflow as tf
 from keras.src.layers.preprocessing import preprocessing_utils as utils
 from tensorflow.keras.layers import Layer
 
-from app.layers.augmentation import (SplitImageTarget)
 from app.layers.augmentation.image_target_processing import AugmentationLayer
 
 
@@ -33,7 +32,7 @@ class SplitImageTarget(tf.keras.layers.Layer):
                  target_key: str = 'targets',
                  name='splitImageMask',
                  **kwargs):
-        super(SplitImageTarget, self).__init__(name=name, trainable=False, **kwargs)
+        super().__init__(name=name, trainable=False, **kwargs)
         self.image_key = image_key
         self.target_key = target_key
 
