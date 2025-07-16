@@ -243,6 +243,31 @@ class AugmentedModel(tf.keras.Model):
         else:
             self.normalizer = PassThroughLayer()
 
+        self.aug_preview = RandomAugmentationLayer(image_key=image_key,
+                                                   target_key=target_key,
+                                                   bounding_box_key=bounding_box_key,
+                                                   flip=flip,
+                                                   flip_mode=flip_mode,
+                                                   rotate=rotate,
+                                                   theta=theta,
+                                                   shear=shear,
+                                                   shear_angle=shear_angle,
+                                                   zoom=zoom,
+                                                   zoom_factor=zoom_factor,
+                                                   use_gaussian_noise=use_gaussian_noise,
+                                                   gaussian_range=gaussian_range,
+                                                   adjust_brightness=adjust_brightness,
+                                                   brightness_range=brightness_range,
+                                                   adjust_contrast=adjust_contrast,
+                                                   contrast_range=contrast_range,
+                                                   jitter=jitter,
+                                                   jitter_range=jitter_range,
+                                                   fill_mode=fill_mode,
+                                                   interpolation=interpolation,
+                                                   image_intensity_range=image_intensity_range,
+                                                   fill_value=fill_value,
+                                                   name='previewer')
+
     def call(self, inputs, training=None, mask=None):
 
         if training:
@@ -550,7 +575,7 @@ class AugmentedModel(tf.keras.Model):
 
         # ==== 3. Augment ====
 
-        augmented = self.augmenter(input_dict, training=True)
+        augmented = self.aug_preview(input_dict, training=True)
         augmented_images = augmented[self.image_key]
         augmented_masks = augmented[self.target_key]
 
@@ -578,3 +603,39 @@ class AugmentedModel(tf.keras.Model):
 
         plt.tight_layout()
         plt.show()
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'num_of_classes': self.num_of_classes,
+            'base_model': self.base_model,
+            'image_key': self.image_key,
+            'target_key': self.target_key,
+            'bounding_box_key': self.bounding_box_key,
+            'batches_before_aug': self.batches_before_aug,
+            'augment_on_eval': self.augment_on_eval,
+            'compute_sample_weights': self.compute_sample_weights,
+            'flip': self.flip,
+            'flip_mode': self.flip_mode,
+            'rotate': self.rotate,
+            'theta': self.theta,
+            'shear': self.shear,
+            'shear_angle': self.shear_angle,
+            'zoom': self.zoom,
+            'zoom_factor': self.zoom_factor,
+            'use_gaussian_noise': self.use_gaussian_noise,
+            'gaussian_range': self.gaussian_range,
+            'adjust_brightness': self.adjust_brightness,
+            'brightness_range': self.brightness_range,
+            'adjust_contrast': self.adjust_contrast,
+            'contrast_range': self.contrast_range,
+            'jitter': self.jitter,
+            'jitter_range': self.jitter_range,
+            'normalize': self.normalize,
+            'scale_to_0_1': self.scale_to_0_1,
+            'fill_mode': self.fill_mode,
+            'interpolation': self.interpolation,
+            'fill_value': self.fill_value,
+            'image_intensity_range': self.image_intensity_range,
+            'name': self.name,
+        })
