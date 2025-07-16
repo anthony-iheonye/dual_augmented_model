@@ -117,3 +117,9 @@ morph-and-split-toolkit-key.json
 /old_augment_code.py
 /train_cache/
 /val_cache/
+
+# Byte-compiled / cache files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
